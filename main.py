@@ -5,9 +5,11 @@ import argparse
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
+import tarfile
 from datetime import datetime, timezone
 from typing import Any
 
@@ -130,6 +132,80 @@ def resolve_wasmer_checkout(args: argparse.Namespace, work_dir: Path) -> Path:
     return clone_or_update_wasmer("https://github.com/wasmerio/wasmer.git", args.wasmer_ref, work_dir)
 
 
+def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None:
+    if shutil.which("gh") is None:
+        return None
+    if platform.system() != "Linux":
+        return None
+    machine = platform.machine().lower()
+    if machine not in {"x86_64", "amd64"}:
+        return None
+
+    proc = subprocess.run(
+        [
+            "gh",
+            "run",
+            "list",
+            "--repo",
+            "wasmerio/wasmer",
+            "--workflow",
+            "build.yml",
+            "--branch",
+            "main",
+            "--limit",
+            "10",
+            "--json",
+            "databaseId,headSha,conclusion,status",
+        ],
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    runs = json.loads(proc.stdout or "[]")
+    run = next((row for row in runs if row.get("status") == "completed" and row.get("conclusion") == "success"), None)
+    if not run:
+        return None
+
+    commit = run["headSha"]
+    cache_dir = work_dir / "prebuilt-wasmer" / commit
+    install_dir = cache_dir / "install"
+    wasmer_bin = install_dir / "bin" / "wasmer"
+    if wasmer_bin.exists():
+        return wasmer_bin, commit
+
+    shutil.rmtree(cache_dir, ignore_errors=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    download = subprocess.run(
+        [
+            "gh",
+            "run",
+            "download",
+            str(run["databaseId"]),
+            "--repo",
+            "wasmerio/wasmer",
+            "-n",
+            "wasmer-linux-amd64",
+            "-D",
+            str(cache_dir),
+        ],
+        text=True,
+        capture_output=True,
+    )
+    if download.returncode != 0:
+        return None
+
+    archive = cache_dir / "wasmer.tar.gz"
+    if not archive.exists():
+        return None
+    install_dir.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:gz") as tar:
+        tar.extractall(install_dir)
+    if not wasmer_bin.exists():
+        return None
+    return wasmer_bin, commit
+
+
 def ensure_cpython_checkout(version: str, work_dir: Path) -> Path:
     cache_root = work_dir / "cpython"
     safe = "".join(ch for ch in version.replace("/", "_").replace(":", "_").replace("@", "_") if ch.isalnum() or ch in "._-")
@@ -189,13 +265,23 @@ def run_python_suite(args: argparse.Namespace) -> int:
     work_dir = output_dir / ".work"
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    wasmer_checkout = resolve_wasmer_checkout(args, work_dir)
     cpython_checkout = ensure_cpython_checkout(args.cpython_version, work_dir)
     host_test_dir = cpython_checkout / "Lib" / "test"
     patch_faulthandler_workarounds(host_test_dir)
 
-    run(["cargo", "build", "-p", "wasmer-cli", "--features", "llvm", "--release"], cwd=wasmer_checkout)
-    wasmer_bin = wasmer_checkout / "target" / "release" / "wasmer"
+    wasmer_checkout: Path | None = None
+    prebuilt = None
+    if not args.wasmer_checkout and args.wasmer_ref == "main":
+        prebuilt = try_download_prebuilt_main_wasmer(work_dir)
+    if prebuilt is not None:
+        wasmer_bin, wasmer_commit = prebuilt
+        print(f"Using prebuilt Wasmer main artifact at {wasmer_bin}", flush=True)
+    else:
+        wasmer_checkout = resolve_wasmer_checkout(args, work_dir)
+        print(f"Building Wasmer from source at {wasmer_checkout}", flush=True)
+        run(["cargo", "build", "-p", "wasmer-cli", "--features", "llvm", "--release"], cwd=wasmer_checkout)
+        wasmer_bin = wasmer_checkout / "target" / "release" / "wasmer"
+        wasmer_commit = git_head_commit(wasmer_checkout)
 
     if args.debug_test:
         proc = run_python_debug(wasmer_bin=str(wasmer_bin), host_test_dir=host_test_dir, test_name=args.debug_test)
@@ -221,7 +307,7 @@ def run_python_suite(args: argparse.Namespace) -> int:
         "wasmer": {
             "ref": args.wasmer_ref,
             "branch": args.wasmer_ref,
-            "commit": git_head_commit(wasmer_checkout),
+            "commit": wasmer_commit,
         },
         "python": {
             "cpython_version": args.cpython_version,
