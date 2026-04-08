@@ -1,0 +1,68 @@
+name: python-upstream
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      wasmer_ref:
+        description: "Wasmer git ref"
+        required: false
+        default: "main"
+      compare_ref:
+        description: "Git ref to compare against when publishing"
+        required: false
+        default: "HEAD"
+      cpython_version:
+        description: "CPython version/tag"
+        required: false
+        default: "v3.13.0"
+      timeout:
+        description: "Job timeout in seconds"
+        required: false
+        default: "1800"
+
+permissions:
+  contents: write
+
+jobs:
+  run-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Python upstream suite
+        run: |
+          python3 main.py run-python \
+            --wasmer-ref "${{ github.event.inputs.wasmer_ref || 'main' }}" \
+            --cpython-version "${{ github.event.inputs.cpython_version || 'v3.13.0' }}" \
+            --timeout "${{ github.event.inputs.timeout || '1800' }}"
+
+      - name: Publish snapshot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 main.py publish-snapshot \
+            --repo . \
+            --source-dir . \
+            --branch "${{ github.event.inputs.wasmer_ref || 'main' }}" \
+            --compare-ref "${{ github.event.inputs.compare_ref || 'HEAD' }}"
+
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-upstream-snapshot
+          path: |
+            status.json
+            metadata.json
+            comparison.json
+            summary.md
