@@ -381,9 +381,9 @@ def ensure_git_identity(repo: Path, name: str, email: str) -> None:
 
 def ensure_branch_checked_out(repo: Path, branch: str) -> None:
     if git_has_ref(repo, f"refs/remotes/origin/{branch}"):
-        run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo)
+        run(["git", "checkout", "-f", "-B", branch, f"origin/{branch}"], cwd=repo)
     else:
-        run(["git", "checkout", "-B", branch], cwd=repo)
+        run(["git", "checkout", "-f", "-B", branch], cwd=repo)
 
 
 def has_staged_changes(repo: Path) -> bool:
