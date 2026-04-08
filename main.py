@@ -93,6 +93,17 @@ def git_head_commit(repo: Path) -> str:
     return run_capture(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
 
 
+def git_current_branch(repo: Path) -> str:
+    proc = subprocess.run(
+        ["git", "symbolic-ref", "--short", "-q", "HEAD"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+    )
+    branch = proc.stdout.strip()
+    return branch or "local"
+
+
 def git_has_ref(repo: Path, ref: str) -> bool:
     return subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", ref],
@@ -130,6 +141,25 @@ def resolve_wasmer_checkout(args: argparse.Namespace, work_dir: Path) -> Path:
     if args.wasmer_checkout:
         return Path(args.wasmer_checkout).resolve()
     return clone_or_update_wasmer("https://github.com/wasmerio/wasmer.git", args.wasmer_ref, work_dir)
+
+
+def infer_wasmer_checkout_from_bin(wasmer_bin: Path) -> Path | None:
+    try:
+        checkout = wasmer_bin.resolve().parents[2]
+    except IndexError:
+        return None
+    if (checkout / ".git").exists():
+        return checkout
+    return None
+
+
+def resolve_local_wasmer_identity(args: argparse.Namespace, wasmer_bin: Path) -> tuple[str, str, str]:
+    checkout = Path(args.wasmer_checkout).resolve() if args.wasmer_checkout else infer_wasmer_checkout_from_bin(wasmer_bin)
+    if checkout and (checkout / ".git").exists():
+        branch = git_current_branch(checkout)
+        commit = git_head_commit(checkout)
+        return branch, branch, commit
+    return "local", "local", "local"
 
 
 def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None:
@@ -284,23 +314,34 @@ def run_python_suite(args: argparse.Namespace) -> int:
 
     wasmer_checkout: Path | None = None
     prebuilt = None
-    if not args.wasmer_checkout and args.wasmer_ref == "main":
-        prebuilt = try_download_prebuilt_main_wasmer(work_dir)
-    if prebuilt is not None:
-        wasmer_bin, wasmer_commit = prebuilt
-        print(f"Using prebuilt Wasmer main artifact at {wasmer_bin}", flush=True)
+    if args.wasmer_bin:
+        wasmer_bin = Path(args.wasmer_bin).resolve()
+        if not wasmer_bin.exists():
+            raise SystemExit(f"Wasmer binary not found: {wasmer_bin}")
+        print(f"Using local Wasmer binary at {wasmer_bin}", flush=True)
+        wasmer_ref, wasmer_branch, wasmer_commit = resolve_local_wasmer_identity(args, wasmer_bin)
     else:
-        wasmer_checkout = resolve_wasmer_checkout(args, work_dir)
-        print(f"Building Wasmer from source at {wasmer_checkout}", flush=True)
-        run(["cargo", "build", "-p", "wasmer-cli", "--features", "llvm", "--release"], cwd=wasmer_checkout)
-        wasmer_bin = wasmer_checkout / "target" / "release" / "wasmer"
-        wasmer_commit = git_head_commit(wasmer_checkout)
+        if not args.wasmer_checkout and args.wasmer_ref == "main":
+            prebuilt = try_download_prebuilt_main_wasmer(work_dir)
+        if prebuilt is not None:
+            wasmer_bin, wasmer_commit = prebuilt
+            wasmer_ref = args.wasmer_ref
+            wasmer_branch = args.wasmer_ref
+            print(f"Using prebuilt Wasmer main artifact at {wasmer_bin}", flush=True)
+        else:
+            wasmer_checkout = resolve_wasmer_checkout(args, work_dir)
+            print(f"Building Wasmer from source at {wasmer_checkout}", flush=True)
+            run(["cargo", "build", "-p", "wasmer-cli", "--features", "llvm", "--release"], cwd=wasmer_checkout)
+            wasmer_bin = wasmer_checkout / "target" / "release" / "wasmer"
+            wasmer_ref = args.wasmer_ref
+            wasmer_branch = args.wasmer_ref
+            wasmer_commit = git_head_commit(wasmer_checkout)
 
     if args.debug_test:
         proc = run_python_debug(wasmer_bin=str(wasmer_bin), host_test_dir=host_test_dir, test_name=args.debug_test)
         print(proc.stdout, end="")
         print(proc.stderr, end="")
-        status = parse_debug_unittest_status(args.debug_test, proc.stdout + proc.stderr, proc.returncode)
+        return 0 if proc.returncode == 0 else proc.returncode
     else:
         prev_cwd = Path.cwd()
         os.chdir(output_dir)
@@ -318,8 +359,8 @@ def run_python_suite(args: argparse.Namespace) -> int:
     write_json(output_dir / "status.json", status)
     metadata = {
         "wasmer": {
-            "ref": args.wasmer_ref,
-            "branch": args.wasmer_ref,
+            "ref": wasmer_ref,
+            "branch": wasmer_branch,
             "commit": wasmer_commit,
         },
         "python": {
@@ -402,6 +443,7 @@ def render_summary_text(
     baseline_meta: dict[str, Any],
     candidate_meta: dict[str, Any],
     *,
+    results_repo: str | None = None,
     results_commit: str | None = None,
     language: str = "Python",
 ) -> str:
@@ -418,16 +460,14 @@ def render_summary_text(
         "Summary:",
         f"- Regressions: {len(comparison.get('regressions', []))}",
         f"- Improvements: {len(comparison.get('improvements', []))}",
-        f"- Added tests: {len(comparison.get('added', []))}",
-        f"- Removed tests: {len(comparison.get('removed', []))}",
         f"- PASS: {baseline_counts.get('PASS', 0)} -> {candidate_counts.get('PASS', 0)}",
         f"- FAIL: {baseline_counts.get('FAIL', 0)} -> {candidate_counts.get('FAIL', 0)}",
         f"- TIMEOUT: {baseline_counts.get('TIMEOUT', 0)} -> {candidate_counts.get('TIMEOUT', 0)}",
         f"- SKIP: {baseline_counts.get('SKIP', 0)} -> {candidate_counts.get('SKIP', 0)}",
     ]
 
-    if results_commit:
-        lines.extend(["", "Results commit:", f"- {results_commit}"])
+    if results_commit and results_repo:
+        lines.extend(["", f"See full details at [commit](https://github.com/{results_repo}/commit/{results_commit})."])
 
     if comparison.get("regressions"):
         lines.extend(["", "Top regressions:"])
@@ -436,14 +476,6 @@ def render_summary_text(
     if comparison.get("improvements"):
         lines.extend(["", "Top improvements:"])
         lines.extend(f"- `{row['test']}` ({row['from']} -> {row['to']})" for row in comparison["improvements"][:10])
-
-    if comparison.get("added"):
-        lines.extend(["", "Top added tests:"])
-        lines.extend(f"- `{row['test']}` ({row['to']})" for row in comparison["added"][:10])
-
-    if comparison.get("removed"):
-        lines.extend(["", "Top removed tests:"])
-        lines.extend(f"- `{row['test']}` ({row['from']})" for row in comparison["removed"][:10])
 
     return "\n".join(lines) + "\n"
 
@@ -456,6 +488,7 @@ def render_comment(args: argparse.Namespace) -> int:
         comparison,
         baseline_meta,
         candidate_meta,
+        results_repo=args.results_repo,
         results_commit=args.results_commit,
         language="Python",
     )
@@ -488,6 +521,7 @@ def prepare_pr_comment(args: argparse.Namespace) -> int:
             comparison,
             baseline_meta,
             candidate_meta,
+            results_repo=args.results_repo,
             results_commit=args.results_commit,
             language="Python",
         ).rstrip()
@@ -526,6 +560,7 @@ def create_regression_issue(args: argparse.Namespace) -> int:
         comparison,
         baseline_meta,
         candidate_meta,
+        results_repo=args.results_repo,
         results_commit=results_commit,
         language="Python",
     )
@@ -656,6 +691,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_python = sub.add_parser("run-python", help="Run the upstream CPython suite against a Wasmer checkout")
     run_python.add_argument("--wasmer-ref", default="main")
+    run_python.add_argument("--wasmer-bin")
     run_python.add_argument("--wasmer-checkout")
     run_python.add_argument("--cpython-version", default=DEFAULT_CPYTHON_VERSION)
     run_python.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
@@ -672,6 +708,7 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--comparison", required=True)
     comment.add_argument("--baseline-metadata", required=True)
     comment.add_argument("--candidate-metadata", required=True)
+    comment.add_argument("--results-repo")
     comment.add_argument("--results-commit")
     comment.add_argument("--output")
     comment.set_defaults(func=render_comment)
@@ -702,6 +739,7 @@ def build_parser() -> argparse.ArgumentParser:
     issue.add_argument("--comparison", required=True)
     issue.add_argument("--baseline-metadata", required=True)
     issue.add_argument("--candidate-metadata", required=True)
+    issue.add_argument("--results-repo")
     issue.add_argument("--run-url")
     issue.set_defaults(func=create_regression_issue)
 

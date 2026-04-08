@@ -107,6 +107,7 @@ jobs:
             --comparison .git/compat-tests-comparison.json \
             --baseline-metadata .git/compat-tests-baseline-metadata.json \
             --candidate-metadata metadata.json \
+            --results-repo "${{ github.repository }}" \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Comment on Wasmer PR
