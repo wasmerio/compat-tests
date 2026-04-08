@@ -12,7 +12,7 @@ on:
       compare_ref:
         description: "Git ref to compare against when publishing"
         required: false
-        default: "HEAD"
+        default: "origin/main"
       cpython_version:
         description: "CPython version/tag"
         required: false
@@ -68,14 +68,4 @@ jobs:
             --repo . \
             --source-dir . \
             --branch "${{ github.event.inputs.wasmer_ref || 'main' }}" \
-            --compare-ref "${{ github.event.inputs.compare_ref || 'HEAD' }}"
-
-      - name: Upload snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-upstream-snapshot
-          path: |
-            status.json
-            metadata.json
-            comparison.json
-            summary.md
+            --compare-ref "${{ github.event.inputs.compare_ref || 'origin/main' }}"

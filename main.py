@@ -424,9 +424,8 @@ def publish_snapshot(args: argparse.Namespace) -> int:
     write_json(repo / "status.json", status)
     write_json(repo / "metadata.json", metadata)
     write_json(repo / "comparison.json", comparison)
-    write_text(repo / "summary.md", summary_text)
 
-    run(["git", "add", "status.json", "metadata.json", "comparison.json", "summary.md"], cwd=repo)
+    run(["git", "add", "status.json", "metadata.json", "comparison.json"], cwd=repo)
     if not has_staged_changes(repo):
         print("No snapshot changes to publish.", flush=True)
         return 0
