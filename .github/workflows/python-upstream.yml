@@ -79,7 +79,7 @@ jobs:
           python3 main.py create-regression-issue \
             --repo . \
             --repo-full-name "${{ github.repository }}" \
-            --comparison comparison.json \
+            --comparison .git/compat-tests-comparison.json \
             --baseline-metadata .git/compat-tests-baseline-metadata.json \
             --candidate-metadata metadata.json \
             --run-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"

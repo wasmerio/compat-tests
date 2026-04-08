@@ -470,11 +470,11 @@ def publish_snapshot(args: argparse.Namespace) -> int:
 
     summary_text = render_summary_text(comparison, baseline_meta, metadata, language="Python")
     write_json(repo / ".git" / "compat-tests-baseline-metadata.json", baseline_meta)
+    write_json(repo / ".git" / "compat-tests-comparison.json", comparison)
     write_json(repo / "status.json", status)
     write_json(repo / "metadata.json", metadata)
-    write_json(repo / "comparison.json", comparison)
 
-    run(["git", "add", "status.json", "metadata.json", "comparison.json"], cwd=repo)
+    run(["git", "add", "status.json", "metadata.json"], cwd=repo)
     if not has_staged_changes(repo):
         print("No snapshot changes to publish.", flush=True)
         return 0
