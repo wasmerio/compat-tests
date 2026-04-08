@@ -16,7 +16,7 @@ from typing import Any
 from python_upstream import run_python_debug, run_python_upstream
 
 DEFAULT_CPYTHON_VERSION = "v3.13.0"
-DEFAULT_TIMEOUT = 1800
+DEFAULT_TIMEOUT = 600
 RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT")
 REGRESSION_TRANSITIONS = {
     ("PASS", "FAIL"),
@@ -392,6 +392,8 @@ def result_label(result: dict) -> str:
         return "REGRESSION"
     if result["improvements"]:
         return "IMPROVEMENT"
+    if result.get("added") or result.get("removed") or result.get("changed"):
+        return "CHANGED"
     return "NO_CHANGE"
 
 
@@ -416,6 +418,8 @@ def render_summary_text(
         "Summary:",
         f"- Regressions: {len(comparison.get('regressions', []))}",
         f"- Improvements: {len(comparison.get('improvements', []))}",
+        f"- Added tests: {len(comparison.get('added', []))}",
+        f"- Removed tests: {len(comparison.get('removed', []))}",
         f"- PASS: {baseline_counts.get('PASS', 0)} -> {candidate_counts.get('PASS', 0)}",
         f"- FAIL: {baseline_counts.get('FAIL', 0)} -> {candidate_counts.get('FAIL', 0)}",
         f"- TIMEOUT: {baseline_counts.get('TIMEOUT', 0)} -> {candidate_counts.get('TIMEOUT', 0)}",
@@ -432,6 +436,14 @@ def render_summary_text(
     if comparison.get("improvements"):
         lines.extend(["", "Top improvements:"])
         lines.extend(f"- `{row['test']}` ({row['from']} -> {row['to']})" for row in comparison["improvements"][:10])
+
+    if comparison.get("added"):
+        lines.extend(["", "Top added tests:"])
+        lines.extend(f"- `{row['test']}` ({row['to']})" for row in comparison["added"][:10])
+
+    if comparison.get("removed"):
+        lines.extend(["", "Top removed tests:"])
+        lines.extend(f"- `{row['test']}` ({row['from']})" for row in comparison["removed"][:10])
 
     return "\n".join(lines) + "\n"
 
@@ -557,7 +569,13 @@ def publish_snapshot(args: argparse.Namespace) -> int:
     ensure_branch_checked_out(repo, branch)
 
     branch_status = git_file_json(repo, "HEAD", "status.json")
-    if branch_status == status:
+    branch_metadata = git_file_json(repo, "HEAD", "metadata.json")
+    same_identity = (
+        branch_metadata.get("wasmer", {}) == metadata.get("wasmer", {})
+        and branch_metadata.get("python", {}) == metadata.get("python", {})
+        and branch_metadata.get("config", {}) == metadata.get("config", {})
+    )
+    if branch_status == status and same_identity:
         print("No snapshot changes to publish.", flush=True)
         return 0
 

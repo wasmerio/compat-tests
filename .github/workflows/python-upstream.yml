@@ -20,7 +20,7 @@ on:
       timeout:
         description: "Job timeout in seconds"
         required: false
-        default: "1800"
+        default: "600"
 
 permissions:
   contents: write
@@ -34,7 +34,7 @@ jobs:
       WASMER_REF: ${{ github.event.inputs.wasmer_ref || 'main' }}
       COMPARE_REF: ${{ github.event.inputs.compare_ref || 'origin/main' }}
       CPYTHON_VERSION: ${{ github.event.inputs.cpython_version || 'v3.13.0' }}
-      TEST_TIMEOUT: ${{ github.event.inputs.timeout || '1800' }}
+      TEST_TIMEOUT: ${{ github.event.inputs.timeout || '600' }}
     steps:
       - uses: actions/checkout@v4
         with:
