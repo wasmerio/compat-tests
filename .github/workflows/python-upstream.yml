@@ -30,6 +30,11 @@ jobs:
   run-python:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      WASMER_REF: ${{ github.event.inputs.wasmer_ref || 'main' }}
+      COMPARE_REF: ${{ github.event.inputs.compare_ref || 'origin/main' }}
+      CPYTHON_VERSION: ${{ github.event.inputs.cpython_version || 'v3.13.0' }}
+      TEST_TIMEOUT: ${{ github.event.inputs.timeout || '1800' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,6 +52,7 @@ jobs:
           sudo apt-get install -y libtinfo6
 
       - name: Install LLVM (Linux)
+        if: ${{ env.WASMER_REF != 'main' }}
         run: |
           curl -H "Authorization: Bearer ${{ github.token }}" --retry 3 --proto '=https' --tlsv1.2 -sSf https://github.com/wasmerio/llvm-custom-builds/releases/download/21.x/llvm-linux-amd64.tar.xz -L -o /opt/llvm.tar.xz
           mkdir -p /opt/llvm-21
@@ -55,11 +61,13 @@ jobs:
           echo 'LLVM_SYS_211_PREFIX=/opt/llvm-21' >> $GITHUB_ENV
 
       - name: Run Python upstream suite
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 main.py run-python \
-            --wasmer-ref "${{ github.event.inputs.wasmer_ref || 'main' }}" \
-            --cpython-version "${{ github.event.inputs.cpython_version || 'v3.13.0' }}" \
-            --timeout "${{ github.event.inputs.timeout || '1800' }}"
+            --wasmer-ref "${WASMER_REF}" \
+            --cpython-version "${CPYTHON_VERSION}" \
+            --timeout "${TEST_TIMEOUT}"
 
       - name: Publish snapshot
         env:
@@ -68,8 +76,8 @@ jobs:
           python3 main.py publish-snapshot \
             --repo . \
             --source-dir . \
-            --branch "${{ github.event.inputs.wasmer_ref || 'main' }}" \
-            --compare-ref "${{ github.event.inputs.compare_ref || 'origin/main' }}"
+            --branch "${WASMER_REF}" \
+            --compare-ref "${COMPARE_REF}"
 
       - name: Create regression issue
         if: ${{ github.event_name == 'schedule' }}

@@ -134,11 +134,14 @@ def resolve_wasmer_checkout(args: argparse.Namespace, work_dir: Path) -> Path:
 
 def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None:
     if shutil.which("gh") is None:
+        print("Prebuilt Wasmer main artifact unavailable: gh CLI not found", flush=True)
         return None
     if platform.system() != "Linux":
+        print(f"Prebuilt Wasmer main artifact unavailable: unsupported OS {platform.system()}", flush=True)
         return None
     machine = platform.machine().lower()
     if machine not in {"x86_64", "amd64"}:
+        print(f"Prebuilt Wasmer main artifact unavailable: unsupported machine {machine}", flush=True)
         return None
 
     proc = subprocess.run(
@@ -161,10 +164,14 @@ def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None
         capture_output=True,
     )
     if proc.returncode != 0:
+        print("Prebuilt Wasmer main artifact lookup failed:", flush=True)
+        if proc.stderr:
+            print(proc.stderr, end="", flush=True)
         return None
     runs = json.loads(proc.stdout or "[]")
     run = next((row for row in runs if row.get("status") == "completed" and row.get("conclusion") == "success"), None)
     if not run:
+        print("Prebuilt Wasmer main artifact unavailable: no successful main build run found", flush=True)
         return None
 
     commit = run["headSha"]
@@ -172,6 +179,7 @@ def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None
     install_dir = cache_dir / "install"
     wasmer_bin = install_dir / "bin" / "wasmer"
     if wasmer_bin.exists():
+        print(f"Using cached prebuilt Wasmer main artifact for {commit}", flush=True)
         return wasmer_bin, commit
 
     shutil.rmtree(cache_dir, ignore_errors=True)
@@ -193,15 +201,20 @@ def try_download_prebuilt_main_wasmer(work_dir: Path) -> tuple[Path, str] | None
         capture_output=True,
     )
     if download.returncode != 0:
+        print("Prebuilt Wasmer main artifact download failed:", flush=True)
+        if download.stderr:
+            print(download.stderr, end="", flush=True)
         return None
 
     archive = cache_dir / "wasmer.tar.gz"
     if not archive.exists():
+        print("Prebuilt Wasmer main artifact download failed: wasmer.tar.gz missing", flush=True)
         return None
     install_dir.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as tar:
         tar.extractall(install_dir)
     if not wasmer_bin.exists():
+        print("Prebuilt Wasmer main artifact extraction failed: bin/wasmer missing", flush=True)
         return None
     return wasmer_bin, commit
 
@@ -543,27 +556,29 @@ def publish_snapshot(args: argparse.Namespace) -> int:
     run(["git", "fetch", "--all", "--tags"], cwd=repo)
     ensure_branch_checked_out(repo, branch)
 
-    baseline_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
-    baseline_meta = git_file_json(repo, compare_ref, "metadata.json") if compare_ref else {}
-    comparison = compare_statuses(baseline_status, status)
-    if not baseline_meta:
-        baseline_meta = {
+    branch_status = git_file_json(repo, "HEAD", "status.json")
+    if branch_status == status:
+        print("No snapshot changes to publish.", flush=True)
+        return 0
+
+    compare_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
+    compare_meta = git_file_json(repo, compare_ref, "metadata.json") if compare_ref else {}
+    comparison = compare_statuses(compare_status, status)
+    if not compare_meta:
+        compare_meta = {
             "wasmer": {
                 "branch": compare_ref or "none",
                 "commit": "0000000",
             }
         }
 
-    summary_text = render_summary_text(comparison, baseline_meta, metadata, language="Python")
-    write_json(repo / ".git" / "compat-tests-baseline-metadata.json", baseline_meta)
+    summary_text = render_summary_text(comparison, compare_meta, metadata, language="Python")
+    write_json(repo / ".git" / "compat-tests-baseline-metadata.json", compare_meta)
     write_json(repo / ".git" / "compat-tests-comparison.json", comparison)
     write_json(repo / "status.json", status)
     write_json(repo / "metadata.json", metadata)
 
     run(["git", "add", "status.json", "metadata.json"], cwd=repo)
-    if not has_staged_changes(repo):
-        print("No snapshot changes to publish.", flush=True)
-        return 0
 
     maybe_setup_gh_git_auth(repo)
     ensure_git_identity(repo, args.git_user_name, args.git_user_email)
