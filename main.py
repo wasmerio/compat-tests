@@ -20,7 +20,7 @@ DEFAULT_CPYTHON_VERSION = "v3.13.0"
 DEFAULT_TIMEOUT = 600
 RETEST_TIMEOUT = 300
 RETEST_RUNS = 3
-RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT")
+RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT", "FLAKY")
 REGRESSION_TRANSITIONS = {
     ("PASS", "FAIL"),
     ("PASS", "TIMEOUT"),
@@ -88,7 +88,8 @@ def parse_debug_unittest_status(output: str, exit_code: int) -> str:
 def counts_from_status(status: dict[str, str]) -> dict[str, int]:
     counts = {name: 0 for name in RESULT_STATUSES}
     for value in status.values():
-        counts[value] = counts.get(value, 0) + 1
+        if value in counts:
+            counts[value] += 1
     return counts
 
 
@@ -318,9 +319,9 @@ def classify_changed_test(
     host_test_dir: Path,
     test_name: str,
     old_status: str,
-) -> tuple[str, str, list[str]]:
-    outcomes: list[str] = []
-    for _ in range(RETEST_RUNS):
+    new_status: str,
+) -> tuple[str, str, bool]:
+    def rerun_once() -> str:
         try:
             proc = run_python_debug(
                 wasmer_bin=str(wasmer_bin),
@@ -328,12 +329,20 @@ def classify_changed_test(
                 test_name=test_name,
                 timeout=RETEST_TIMEOUT,
             )
-            outcome = parse_debug_unittest_status((proc.stdout or "") + (proc.stderr or ""), proc.returncode)
+            return parse_debug_unittest_status((proc.stdout or "") + (proc.stderr or ""), proc.returncode)
         except subprocess.TimeoutExpired:
-            outcome = "TIMEOUT"
-        outcomes.append(outcome)
+            return "TIMEOUT"
 
-    return test_name, outcomes[0] if len(set(outcomes)) == 1 else old_status, outcomes
+    if new_status != "PASS":
+        outcome = rerun_once()
+        if outcome == new_status:
+            return test_name, new_status, False
+        return test_name, old_status, True
+
+    for _ in range(RETEST_RUNS):
+        if rerun_once() != "PASS":
+            return test_name, old_status, True
+    return test_name, "PASS", False
 
 
 def stabilize_changed_tests(
@@ -342,14 +351,14 @@ def stabilize_changed_tests(
     candidate_status: dict[str, str],
     wasmer_bin: Path,
     host_test_dir: Path,
-) -> tuple[dict[str, str], list[dict[str, Any]]]:
+) -> tuple[dict[str, str], int]:
     changed = [
         test
         for test in sorted(set(baseline_status) & set(candidate_status))
         if baseline_status[test] != candidate_status[test]
     ]
     if not changed:
-        return candidate_status, []
+        return candidate_status, 0
 
     print(
         f"Re-running {len(changed)} changed tests with {worker_count(len(changed))} workers "
@@ -358,7 +367,7 @@ def stabilize_changed_tests(
     )
 
     effective = dict(candidate_status)
-    flaky: list[dict[str, Any]] = []
+    flaky_count = 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count(len(changed))) as pool:
         futures = {
@@ -368,27 +377,21 @@ def stabilize_changed_tests(
                 host_test_dir=host_test_dir,
                 test_name=test_name,
                 old_status=baseline_status[test_name],
+                new_status=candidate_status[test_name],
             ): test_name
             for test_name in changed
         }
         completed = 0
         for future in concurrent.futures.as_completed(futures):
-            test_name, effective_status, outcomes = future.result()
+            test_name, effective_status, flaky = future.result()
             effective[test_name] = effective_status
-            if len(set(outcomes)) != 1:
-                flaky.append(
-                    {
-                        "test": test_name,
-                        "from": baseline_status[test_name],
-                        "to": candidate_status[test_name],
-                        "outcomes": outcomes,
-                    }
-                )
+            if flaky:
+                flaky_count += 1
             completed += 1
             if completed % 10 == 0 or completed == len(changed):
                 print(f"Re-ran {completed}/{len(changed)} changed tests", flush=True)
 
-    return dict(sorted(effective.items())), sorted(flaky, key=lambda row: row["test"])
+    return dict(sorted(effective.items())), flaky_count
 
 
 def run_python_suite(args: argparse.Namespace) -> int:
@@ -451,7 +454,7 @@ def run_python_suite(args: argparse.Namespace) -> int:
             raise SystemExit("Python upstream run did not produce any test statuses")
 
     baseline_status = git_file_json(output_dir, args.compare_ref, "status.json") if args.compare_ref else {}
-    status, flaky = stabilize_changed_tests(
+    status, flaky_count = stabilize_changed_tests(
         baseline_status=baseline_status,
         candidate_status=status,
         wasmer_bin=Path(wasmer_bin),
@@ -477,8 +480,8 @@ def run_python_suite(args: argparse.Namespace) -> int:
             "finished_at": now_utc(),
         },
         "counts": counts_from_status(status),
-        "flaky": flaky,
     }
+    metadata["counts"]["FLAKY"] = flaky_count
     write_json(output_dir / "metadata.json", metadata)
     return 0
 
@@ -551,8 +554,8 @@ def render_summary_text(
     language: str = "Python",
 ) -> str:
     label = result_label(comparison)
-    baseline_counts = comparison.get("baseline_counts", {})
-    candidate_counts = comparison.get("candidate_counts", {})
+    baseline_counts = baseline_meta.get("counts") or comparison.get("baseline_counts", {})
+    candidate_counts = candidate_meta.get("counts") or comparison.get("candidate_counts", {})
 
     lines = [
         f"{language} upstream result: {label}",
@@ -563,7 +566,7 @@ def render_summary_text(
         "Summary:",
         f"- Regressions: {len(comparison.get('regressions', []))}",
         f"- Improvements: {len(comparison.get('improvements', []))}",
-        f"- FLAKY: {len(comparison.get('flaky', []))}",
+        f"- FLAKY: {baseline_counts.get('FLAKY', 0)} -> {candidate_counts.get('FLAKY', 0)}",
         f"- PASS: {baseline_counts.get('PASS', 0)} -> {candidate_counts.get('PASS', 0)}",
         f"- FAIL: {baseline_counts.get('FAIL', 0)} -> {candidate_counts.get('FAIL', 0)}",
         f"- TIMEOUT: {baseline_counts.get('TIMEOUT', 0)} -> {candidate_counts.get('TIMEOUT', 0)}",
@@ -746,6 +749,20 @@ def publish_snapshot(args: argparse.Namespace) -> int:
     run(["git", "fetch", "--all", "--tags"], cwd=repo)
     ensure_branch_checked_out(repo, branch)
 
+    compare_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
+    compare_meta = git_file_json(repo, compare_ref, "metadata.json") if compare_ref else {}
+    comparison = compare_statuses(compare_status, status)
+    if not compare_meta:
+        compare_meta = {
+            "wasmer": {
+                "branch": compare_ref or "none",
+                "commit": "0000000",
+            },
+            "counts": counts_from_status(compare_status),
+        }
+    write_json(repo / ".git" / "compat-tests-baseline-metadata.json", compare_meta)
+    write_json(repo / ".git" / "compat-tests-comparison.json", comparison)
+
     branch_status = git_file_json(repo, "HEAD", "status.json")
     branch_metadata = git_file_json(repo, "HEAD", "metadata.json")
     same_identity = (
@@ -758,21 +775,7 @@ def publish_snapshot(args: argparse.Namespace) -> int:
         print(git_head_commit(repo), flush=True)
         return 0
 
-    compare_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
-    compare_meta = git_file_json(repo, compare_ref, "metadata.json") if compare_ref else {}
-    comparison = compare_statuses(compare_status, status)
-    comparison["flaky"] = metadata.get("flaky", [])
-    if not compare_meta:
-        compare_meta = {
-            "wasmer": {
-                "branch": compare_ref or "none",
-                "commit": "0000000",
-            }
-        }
-
     summary_text = render_summary_text(comparison, compare_meta, metadata, language="Python")
-    write_json(repo / ".git" / "compat-tests-baseline-metadata.json", compare_meta)
-    write_json(repo / ".git" / "compat-tests-comparison.json", comparison)
     write_json(repo / "status.json", status)
     write_json(repo / "metadata.json", metadata)
 
