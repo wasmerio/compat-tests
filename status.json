@@ -15744,7 +15744,7 @@
   "test.test_ftplib.TestIPv6Environment.test_makepasv": "FAIL",
   "test.test_ftplib.TestIPv6Environment.test_makeport": "FAIL",
   "test.test_ftplib.TestIPv6Environment.test_transfer": "FAIL",
-  "test.test_ftplib.TestTLS_FTPClass.test_auth_issued_twice": "FAIL",
+  "test.test_ftplib.TestTLS_FTPClass.test_auth_issued_twice": "TIMEOUT",
   "test.test_ftplib.TestTLS_FTPClass.test_ccc": "TIMEOUT",
   "test.test_ftplib.TestTLS_FTPClass.test_check_hostname": "SKIP",
   "test.test_ftplib.TestTLS_FTPClass.test_context": "FAIL",
