@@ -82,7 +82,8 @@ jobs:
           python3 main.py run-python \
             --wasmer-ref "${WASMER_REF}" \
             --cpython-version "${CPYTHON_VERSION}" \
-            --timeout "${TEST_TIMEOUT}"
+            --timeout "${TEST_TIMEOUT}" \
+            --compare-ref "${COMPARE_REF}"
 
       - name: Publish snapshot
         id: publish

@@ -153,7 +153,7 @@ def run_job(job: str, expected: list[str], wasmer_bin: str, host_test_dir: Path,
     return job, sorted(passed), sorted(failed), sorted(skipped), []
 
 
-def run_python_debug(*, wasmer_bin: str, host_test_dir: Path, test_name: str) -> subprocess.CompletedProcess[str]:
+def run_python_debug(*, wasmer_bin: str, host_test_dir: Path, test_name: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     guest_dir = guest_test_dir(wasmer_bin)
     cmd = [
         wasmer_bin,
@@ -169,7 +169,7 @@ def run_python_debug(*, wasmer_bin: str, host_test_dir: Path, test_name: str) ->
         test_name,
     ]
     print(" ".join(cmd), flush=True)
-    return subprocess.run(cmd, text=True, capture_output=True)
+    return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
 
 
 def run_python_upstream(*, wasmer_bin: str, host_test_dir: Path, timeout: int) -> dict[str, str]:
@@ -179,12 +179,26 @@ def run_python_upstream(*, wasmer_bin: str, host_test_dir: Path, timeout: int) -
     workers = min(workers, len(jobs_list))
 
     discovered: dict[str, list[str]] = {}
-    for job in jobs_list:
-        job, names = discover_job(job, wasmer_bin, host_test_dir, guest_dir, max(timeout, 2))
-        if names:
-            discovered[job] = names
+    print(f"Discovering leaf tests in {len(jobs_list)} modules with {workers} workers...", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(discover_job, job, wasmer_bin, host_test_dir, guest_dir, max(timeout, 2)): job
+            for job in jobs_list
+        }
+        completed = 0
+        for future in concurrent.futures.as_completed(futures):
+            job, names = future.result()
+            if names:
+                discovered[job] = names
+            completed += 1
+            if completed % 25 == 0 or completed == len(jobs_list):
+                print(f"Discovered {completed}/{len(jobs_list)} modules", flush=True)
+
+    total_cases = sum(len(names) for names in discovered.values())
+    print(f"Running {len(discovered)} module jobs covering {total_cases} tests with {workers} workers...", flush=True)
 
     status: dict[str, str] = {}
+    completed_cases = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(run_job, job, discovered[job], wasmer_bin, host_test_dir, guest_dir, max(timeout, 2)): job
@@ -193,15 +207,19 @@ def run_python_upstream(*, wasmer_bin: str, host_test_dir: Path, timeout: int) -
         for future in concurrent.futures.as_completed(futures):
             _, job_pass, job_fail, job_skip, job_timeout = future.result()
             for name in job_pass:
-                print(f"{name} PASS", flush=True)
+                completed_cases += 1
+                print(f"[{completed_cases}/{total_cases}] {name} PASS", flush=True)
                 status[name] = "PASS"
             for name in job_fail:
-                print(f"{name} FAIL", flush=True)
+                completed_cases += 1
+                print(f"[{completed_cases}/{total_cases}] {name} FAIL", flush=True)
                 status[name] = "FAIL"
             for name in job_skip:
-                print(f"{name} SKIP", flush=True)
+                completed_cases += 1
+                print(f"[{completed_cases}/{total_cases}] {name} SKIP", flush=True)
                 status[name] = "SKIP"
             for name in job_timeout:
-                print(f"{name} TIMEOUT", flush=True)
+                completed_cases += 1
+                print(f"[{completed_cases}/{total_cases}] {name} TIMEOUT", flush=True)
                 status[name] = "TIMEOUT"
     return dict(sorted(status.items()))

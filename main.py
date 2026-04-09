@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ from python_upstream import run_python_debug, run_python_upstream
 
 DEFAULT_CPYTHON_VERSION = "v3.13.0"
 DEFAULT_TIMEOUT = 600
+RETEST_TIMEOUT = 300
+RETEST_RUNS = 3
 RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT")
 REGRESSION_TRANSITIONS = {
     ("PASS", "FAIL"),
@@ -72,14 +75,14 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text)
 
 
-def parse_debug_unittest_status(test_name: str, output: str, exit_code: int) -> dict[str, str]:
+def parse_debug_unittest_status(output: str, exit_code: int) -> str:
     if "... skipped " in output:
-        return {test_name: "SKIP"}
+        return "SKIP"
     if OK_RE.search(output) and exit_code == 0:
-        return {test_name: "PASS"}
+        return "PASS"
     if FAILED_RE.search(output) or exit_code != 0:
-        return {test_name: "FAIL"}
-    return {test_name: "TIMEOUT"}
+        return "FAIL"
+    return "TIMEOUT"
 
 
 def counts_from_status(status: dict[str, str]) -> dict[str, int]:
@@ -87,6 +90,13 @@ def counts_from_status(status: dict[str, str]) -> dict[str, int]:
     for value in status.values():
         counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+def worker_count(limit: int | None = None) -> int:
+    workers = (getattr(os, "process_cpu_count", os.cpu_count)() or 1) + 2
+    if limit is not None:
+        workers = min(workers, max(limit, 1))
+    return workers
 
 
 def git_head_commit(repo: Path) -> str:
@@ -302,6 +312,85 @@ def patch_faulthandler_workarounds(testdir: Path) -> None:
         path.write_text(text)
 
 
+def classify_changed_test(
+    *,
+    wasmer_bin: Path,
+    host_test_dir: Path,
+    test_name: str,
+    old_status: str,
+) -> tuple[str, str, list[str]]:
+    outcomes: list[str] = []
+    for _ in range(RETEST_RUNS):
+        try:
+            proc = run_python_debug(
+                wasmer_bin=str(wasmer_bin),
+                host_test_dir=host_test_dir,
+                test_name=test_name,
+                timeout=RETEST_TIMEOUT,
+            )
+            outcome = parse_debug_unittest_status((proc.stdout or "") + (proc.stderr or ""), proc.returncode)
+        except subprocess.TimeoutExpired:
+            outcome = "TIMEOUT"
+        outcomes.append(outcome)
+
+    return test_name, outcomes[0] if len(set(outcomes)) == 1 else old_status, outcomes
+
+
+def stabilize_changed_tests(
+    *,
+    baseline_status: dict[str, str],
+    candidate_status: dict[str, str],
+    wasmer_bin: Path,
+    host_test_dir: Path,
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    changed = [
+        test
+        for test in sorted(set(baseline_status) & set(candidate_status))
+        if baseline_status[test] != candidate_status[test]
+    ]
+    if not changed:
+        return candidate_status, []
+
+    print(
+        f"Re-running {len(changed)} changed tests with {worker_count(len(changed))} workers "
+        f"({RETEST_RUNS} runs each, {RETEST_TIMEOUT}s timeout)...",
+        flush=True,
+    )
+
+    effective = dict(candidate_status)
+    flaky: list[dict[str, Any]] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count(len(changed))) as pool:
+        futures = {
+            pool.submit(
+                classify_changed_test,
+                wasmer_bin=wasmer_bin,
+                host_test_dir=host_test_dir,
+                test_name=test_name,
+                old_status=baseline_status[test_name],
+            ): test_name
+            for test_name in changed
+        }
+        completed = 0
+        for future in concurrent.futures.as_completed(futures):
+            test_name, effective_status, outcomes = future.result()
+            effective[test_name] = effective_status
+            if len(set(outcomes)) != 1:
+                flaky.append(
+                    {
+                        "test": test_name,
+                        "from": baseline_status[test_name],
+                        "to": candidate_status[test_name],
+                        "outcomes": outcomes,
+                    }
+                )
+            completed += 1
+            if completed % 10 == 0 or completed == len(changed):
+                print(f"Re-ran {completed}/{len(changed)} changed tests", flush=True)
+
+    return dict(sorted(effective.items())), sorted(flaky, key=lambda row: row["test"])
+
+
 def run_python_suite(args: argparse.Namespace) -> int:
     started_at = now_utc()
     output_dir = Path.cwd()
@@ -338,7 +427,12 @@ def run_python_suite(args: argparse.Namespace) -> int:
             wasmer_commit = git_head_commit(wasmer_checkout)
 
     if args.debug_test:
-        proc = run_python_debug(wasmer_bin=str(wasmer_bin), host_test_dir=host_test_dir, test_name=args.debug_test)
+        proc = run_python_debug(
+            wasmer_bin=str(wasmer_bin),
+            host_test_dir=host_test_dir,
+            test_name=args.debug_test,
+            timeout=args.timeout,
+        )
         print(proc.stdout, end="")
         print(proc.stderr, end="")
         return 0 if proc.returncode == 0 else proc.returncode
@@ -355,6 +449,14 @@ def run_python_suite(args: argparse.Namespace) -> int:
             os.chdir(prev_cwd)
         if not status:
             raise SystemExit("Python upstream run did not produce any test statuses")
+
+    baseline_status = git_file_json(output_dir, args.compare_ref, "status.json") if args.compare_ref else {}
+    status, flaky = stabilize_changed_tests(
+        baseline_status=baseline_status,
+        candidate_status=status,
+        wasmer_bin=Path(wasmer_bin),
+        host_test_dir=host_test_dir,
+    )
 
     write_json(output_dir / "status.json", status)
     metadata = {
@@ -375,6 +477,7 @@ def run_python_suite(args: argparse.Namespace) -> int:
             "finished_at": now_utc(),
         },
         "counts": counts_from_status(status),
+        "flaky": flaky,
     }
     write_json(output_dir / "metadata.json", metadata)
     return 0
@@ -460,6 +563,7 @@ def render_summary_text(
         "Summary:",
         f"- Regressions: {len(comparison.get('regressions', []))}",
         f"- Improvements: {len(comparison.get('improvements', []))}",
+        f"- FLAKY: {len(comparison.get('flaky', []))}",
         f"- PASS: {baseline_counts.get('PASS', 0)} -> {candidate_counts.get('PASS', 0)}",
         f"- FAIL: {baseline_counts.get('FAIL', 0)} -> {candidate_counts.get('FAIL', 0)}",
         f"- TIMEOUT: {baseline_counts.get('TIMEOUT', 0)} -> {candidate_counts.get('TIMEOUT', 0)}",
@@ -657,6 +761,7 @@ def publish_snapshot(args: argparse.Namespace) -> int:
     compare_status = git_file_json(repo, compare_ref, "status.json") if compare_ref else {}
     compare_meta = git_file_json(repo, compare_ref, "metadata.json") if compare_ref else {}
     comparison = compare_statuses(compare_status, status)
+    comparison["flaky"] = metadata.get("flaky", [])
     if not compare_meta:
         compare_meta = {
             "wasmer": {
@@ -695,6 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_python.add_argument("--wasmer-checkout")
     run_python.add_argument("--cpython-version", default=DEFAULT_CPYTHON_VERSION)
     run_python.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    run_python.add_argument("--compare-ref", default="origin/main")
     run_python.add_argument("--debug-test")
     run_python.set_defaults(func=run_python_suite)
 
