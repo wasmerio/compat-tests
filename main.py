@@ -18,8 +18,9 @@ from typing import Any
 from python_upstream import append_log, run_python_debug, run_python_upstream
 
 # TODO: We should probably take it automatically from the package via:
-#       wasmer run --net python/python -- -c 'import sys; print(sys.version)'
-DEFAULT_CPYTHON_COMMIT = "e3245fc95e"
+#       wasmer run --net python/python -- -c 'import sys; print(getattr(sys, "_git", None))'
+DEFAULT_CPYTHON_REPO = "https://github.com/wasix-org/cpython.git"
+DEFAULT_CPYTHON_COMMIT = "e3245fc95e570ac823deb50689041bc1f81d6b27"
 DEFAULT_TIMEOUT = 600
 DEFAULT_LOG_FILE = "test.log"
 RETEST_TIMEOUT = 300
@@ -259,7 +260,7 @@ def ensure_cpython_checkout(work_dir: Path) -> Path:
     checkout = cache_root / safe
     cache_root.mkdir(parents=True, exist_ok=True)
     if not (checkout / ".git").exists():
-        run(["git", "clone", "--depth", "1", "https://github.com/python/cpython.git", str(checkout)])
+        run(["git", "clone", "--depth", "1", DEFAULT_CPYTHON_REPO, str(checkout)])
     run(["git", "fetch", "--depth", "1", "origin", DEFAULT_CPYTHON_COMMIT], cwd=checkout)
     run(["git", "checkout", "-B", "compat-tests-cpython", "FETCH_HEAD"], cwd=checkout)
     return checkout
