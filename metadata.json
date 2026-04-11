@@ -4,22 +4,22 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 2606,
-    "FLAKY": 5,
-    "PASS": 28323,
+    "FAIL": 2607,
+    "FLAKY": 4,
+    "PASS": 28324,
     "SKIP": 2105,
-    "TIMEOUT": 4873
+    "TIMEOUT": 4871
   },
   "python": {
     "cpython_commit": "e3245fc95e570ac823deb50689041bc1f81d6b27"
   },
   "run": {
-    "finished_at": "2026-04-10T16:59:59Z",
-    "started_at": "2026-04-10T16:08:23Z"
+    "finished_at": "2026-04-11T03:53:41Z",
+    "started_at": "2026-04-11T03:02:31Z"
   },
   "wasmer": {
     "branch": "main",
-    "commit": "9164ff3a9064cb1de7ef1813b31cd7c9196f7795",
+    "commit": "df125df0214c47bec241a2c580f2b66a66dddcbb",
     "ref": "main"
   }
 }
