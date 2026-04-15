@@ -75,19 +75,23 @@ def append_log(log_path: Path | None, log_lock: threading.Lock | None, header: s
 
 
 def guest_test_dir(wasmer_bin: str) -> str:
-    out = subprocess.run(
-        [
-            wasmer_bin,
-            "run",
-            "python/python",
-            "--",
-            "-c",
-            'import sys; print(f"/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/test")',
-        ],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+    cmd = [
+        wasmer_bin,
+        "run",
+        "python/python",
+        "--",
+        "-c",
+        'import sys; print(f"/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/test")',
+    ]
+    out = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if out.returncode != 0:
+        raise RuntimeError(
+            "guest_test_dir failed\n"
+            f"command: {cmd!r}\n"
+            f"exit_code: {out.returncode}\n"
+            f"stdout:\n{out.stdout}\n"
+            f"stderr:\n{out.stderr}"
+        )
     return out.stdout.strip()
 
 
