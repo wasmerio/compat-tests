@@ -21,6 +21,7 @@ from php_upstream import (
     php_package_version,
     php_source_version,
     php_wasmer_runtime_probe,
+    resolve_host_php_cgi,
     run_php_debug,
     run_php_upstream,
 )
@@ -298,7 +299,45 @@ def ensure_php_checkout(work_dir: Path) -> Path:
         run(["git", "clone", "--depth", "1", "--branch", DEFAULT_PHP_REF, DEFAULT_PHP_REPO, str(checkout)])
     run(["git", "fetch", "--depth", "1", "origin", DEFAULT_PHP_COMMIT], cwd=checkout)
     run(["git", "checkout", "-B", "compat-tests-php", "FETCH_HEAD"], cwd=checkout)
+    patch_php_runtests_worker_putenv(checkout)
     return checkout
+
+
+def patch_php_runtests_worker_putenv(php_checkout: Path) -> None:
+    """Upstream workers restore $GLOBALS['environment'] but not getenv(); SKIPIF uses getenv."""
+    path = php_checkout / "run-tests.php"
+    text = path.read_text()
+    marker = "compat-tests: sync getenv() for workers"
+    if marker in text:
+        return
+    needle = """    foreach ($greeting["GLOBALS"] as $var => $value) {
+        if ($var !== "workerID" && $var !== "workerSock" && $var !== "GLOBALS") {
+            $GLOBALS[$var] = $value;
+        }
+    }
+    foreach ($greeting["constants"] as $const => $value) {
+        define($const, $value);
+    }"""
+    insert = """    foreach ($greeting["GLOBALS"] as $var => $value) {
+        if ($var !== "workerID" && $var !== "workerSock" && $var !== "GLOBALS") {
+            $GLOBALS[$var] = $value;
+        }
+    }
+    // compat-tests: sync getenv() for workers (TEST_PHP_EXECUTABLE_ESCAPED etc. for SKIPIF).
+    if (!empty($GLOBALS['environment']) && is_array($GLOBALS['environment'])) {
+        foreach ($GLOBALS['environment'] as $__ct_k => $__ct_v) {
+            if (is_string($__ct_k) && (is_string($__ct_v) || is_int($__ct_v) || is_float($__ct_v))) {
+                putenv($__ct_k . '=' . $__ct_v);
+            }
+        }
+    }
+    foreach ($greeting["constants"] as $const => $value) {
+        define($const, $value);
+    }"""
+    if needle not in text:
+        print(f"Warning: compat-tests could not patch run-tests.php (marker block missing): {path}", flush=True)
+        return
+    path.write_text(text.replace(needle, insert, 1))
 
 
 def patch_faulthandler_workarounds(testdir: Path) -> None:
@@ -592,6 +631,10 @@ def run_php_suite(args: argparse.Namespace) -> int:
             "See metadata.php.runtime_probe.",
             flush=True,
         )
+    if not args.no_host_php_cgi and not args.no_php_cgi_shim:
+        hc = resolve_host_php_cgi()
+        if hc and args.php_cgi_package is None:
+            print(f"Using host php-cgi for CGI sections: {hc}", flush=True)
     if source_version != "unknown" and package_version != "unknown" and source_version != package_version:
         print(
             f"Warning: PHP source checkout is {source_version}, but {args.php_package} reports {package_version}",
@@ -612,6 +655,7 @@ def run_php_suite(args: argparse.Namespace) -> int:
             enable_net=enable_net,
             offline=args.offline,
             service_env=args.service_env,
+            use_host_php_cgi=not args.no_host_php_cgi,
         )
         print(proc.stdout, end="")
         print(proc.stderr, end="")
@@ -632,6 +676,7 @@ def run_php_suite(args: argparse.Namespace) -> int:
         offline=args.offline,
         log_path=log_path,
         service_env=args.service_env,
+        use_host_php_cgi=not args.no_host_php_cgi,
     )
     if not status:
         raise SystemExit("PHP upstream run did not produce any test statuses")
@@ -673,6 +718,7 @@ def run_php_suite(args: argparse.Namespace) -> int:
             "phpdbg_package": args.phpdbg_package,
             "no_php_cgi_shim": args.no_php_cgi_shim,
             "service_env": args.service_env,
+            "no_host_php_cgi": args.no_host_php_cgi,
         },
         "run": {
             "started_at": started_at,
@@ -1056,6 +1102,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-php-cgi-shim",
         action="store_true",
         help="Do not set TEST_PHP_CGI_EXECUTABLE (upstream skips CGI sections).",
+    )
+    run_php.add_argument(
+        "--no-host-php-cgi",
+        action="store_true",
+        help="Use the Wasmer package for the CGI shim even if host php-cgi exists (default: host php-cgi when found).",
     )
     run_php.add_argument(
         "--service-env",

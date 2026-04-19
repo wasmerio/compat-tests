@@ -55,6 +55,22 @@ def wasmer_guest_env_cli_flags(guest_env: dict[str, str] | None) -> str:
     return " " + " ".join(parts)
 
 
+def resolve_host_php_cgi() -> str | None:
+    """Return host `php-cgi` path if present (Homebrew, Linux packages)."""
+    return shutil.which("php-cgi")
+
+
+def write_host_cli_shim(*, path: Path, executable: str) -> None:
+    """Thin wrapper so run-tests can treat it like another PHP binary (e.g. real php-cgi)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = f"""#!/bin/sh
+set -eu
+exec {sh_quote(executable)} "$@"
+"""
+    path.write_text(text)
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def write_wasmer_php_shim(
     *,
     path: Path,
@@ -86,6 +102,7 @@ def prepare_php_wasmer_shims(
     source_root: Path,
     enable_net: bool,
     service_env: bool,
+    use_host_php_cgi: bool,
 ) -> tuple[Path, Path | None, Path | None]:
     """CLI wrapper is always written; CGI shim is optional; phpdbg only if a package is given."""
     guest_env = dict(SERVICE_ENV_DEFAULTS) if service_env else None
@@ -103,14 +120,19 @@ def prepare_php_wasmer_shims(
     cgi: Path | None = None
     if not no_php_cgi_shim:
         cgi = work_dir / "php-wasmer-cgi"
-        write_wasmer_php_shim(
-            path=cgi,
-            wasmer_bin=wasmer_bin,
-            php_package=cgi_pkg,
-            source_root=source_root,
-            enable_net=enable_net,
-            guest_env=guest_env,
-        )
+        host_cgi = resolve_host_php_cgi() if use_host_php_cgi else None
+        if host_cgi and php_cgi_package is None:
+            # Real CGI SAPI for GET/POST/rfc1867 tests; version may differ from wasm PHP.
+            write_host_cli_shim(path=cgi, executable=host_cgi)
+        else:
+            write_wasmer_php_shim(
+                path=cgi,
+                wasmer_bin=wasmer_bin,
+                php_package=cgi_pkg,
+                source_root=source_root,
+                enable_net=enable_net,
+                guest_env=guest_env,
+            )
 
     phpdbg: Path | None = None
     if phpdbg_package:
@@ -296,6 +318,7 @@ def run_php_debug(
     enable_net: bool,
     offline: bool,
     service_env: bool,
+    use_host_php_cgi: bool,
 ) -> subprocess.CompletedProcess[str]:
     host_php = ensure_host_php()
     cli, cgi, phpdbg = prepare_php_wasmer_shims(
@@ -308,6 +331,7 @@ def run_php_debug(
         source_root=source_root,
         enable_net=enable_net,
         service_env=service_env,
+        use_host_php_cgi=use_host_php_cgi,
     )
     result_file = work_dir / "php-debug-results.tsv"
     result_file.unlink(missing_ok=True)
@@ -342,6 +366,7 @@ def run_php_upstream(
     offline: bool,
     log_path: Path | None = None,
     service_env: bool = False,
+    use_host_php_cgi: bool = True,
 ) -> dict[str, str]:
     host_php = ensure_host_php()
     cli, cgi, phpdbg = prepare_php_wasmer_shims(
@@ -354,6 +379,7 @@ def run_php_upstream(
         source_root=source_root,
         enable_net=enable_net,
         service_env=service_env,
+        use_host_php_cgi=use_host_php_cgi,
     )
     result_file = work_dir / "php-results.tsv"
     result_file.unlink(missing_ok=True)
