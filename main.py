@@ -15,17 +15,31 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from php_upstream import (
+    phpt_inventory,
+    php_loaded_extensions,
+    php_package_version,
+    php_source_version,
+    php_wasmer_runtime_probe,
+    run_php_debug,
+    run_php_upstream,
+)
 from python_upstream import append_log, run_python_debug, run_python_upstream
 
 # TODO: We should probably take it automatically from the package via:
 #       wasmer run --net python/python -- -c 'import sys; print(getattr(sys, "_git", None))'
 DEFAULT_CPYTHON_REPO = "https://github.com/wasix-org/cpython.git"
 DEFAULT_CPYTHON_COMMIT = "e3245fc95e570ac823deb50689041bc1f81d6b27"
+DEFAULT_PHP_REPO = "https://github.com/wasix-org/php.git"
+DEFAULT_PHP_REF = "v8.3.2102"
+DEFAULT_PHP_COMMIT = "6dd6dd1c7e409b8e9dcba8a8d6f9b7b5f944cc9e"
+DEFAULT_PHP_PACKAGE = "php/php-64@8.3.2102"
 DEFAULT_TIMEOUT = 600
+DEFAULT_PHP_TIMEOUT = 60
 DEFAULT_LOG_FILE = "test.log"
 RETEST_TIMEOUT = 300
 RETEST_RUNS = 3
-RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT", "FLAKY")
+RESULT_STATUSES = ("PASS", "FAIL", "SKIP", "TIMEOUT", "FLAKY", "BORK", "WARN", "LEAK", "XFAIL", "XLEAK")
 OK_RE = re.compile(r"^OK\b", re.MULTILINE)
 FAILED_RE = re.compile(r"^FAILED \((.+)\)", re.MULTILINE)
 
@@ -275,6 +289,18 @@ def ensure_cpython_checkout(work_dir: Path) -> Path:
     return checkout
 
 
+def ensure_php_checkout(work_dir: Path) -> Path:
+    cache_root = work_dir / "php"
+    safe = DEFAULT_PHP_COMMIT
+    checkout = cache_root / safe
+    cache_root.mkdir(parents=True, exist_ok=True)
+    if not (checkout / ".git").exists():
+        run(["git", "clone", "--depth", "1", "--branch", DEFAULT_PHP_REF, DEFAULT_PHP_REPO, str(checkout)])
+    run(["git", "fetch", "--depth", "1", "origin", DEFAULT_PHP_COMMIT], cwd=checkout)
+    run(["git", "checkout", "-B", "compat-tests-php", "FETCH_HEAD"], cwd=checkout)
+    return checkout
+
+
 def patch_faulthandler_workarounds(testdir: Path) -> None:
     # Temporary workaround: child Python startup with -X faulthandler is still
     # blocked by wasix-libc sigaltstack(). Remove these rewrites once libc is fixed.
@@ -512,6 +538,152 @@ def run_python_suite(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_php_suite(args: argparse.Namespace) -> int:
+    started_at = now_utc()
+    output_dir = Path.cwd()
+    work_dir = output_dir / ".work"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    php_checkout = ensure_php_checkout(work_dir)
+    php_work_dir = work_dir / "php-runner"
+    php_work_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / DEFAULT_LOG_FILE
+
+    wasmer_checkout: Path | None = None
+    prebuilt = None
+    if args.wasmer_bin:
+        wasmer_bin = Path(args.wasmer_bin).resolve()
+        if not wasmer_bin.exists():
+            raise SystemExit(f"Wasmer binary not found: {wasmer_bin}")
+        print(f"Using local Wasmer binary at {wasmer_bin}", flush=True)
+        wasmer_ref, wasmer_branch, wasmer_commit = resolve_local_wasmer_identity(args, wasmer_bin)
+    else:
+        if not args.wasmer_checkout and args.wasmer_ref == "main":
+            prebuilt = try_download_prebuilt_main_wasmer(work_dir)
+        if prebuilt is not None:
+            wasmer_bin, wasmer_commit = prebuilt
+            wasmer_ref = args.wasmer_ref
+            wasmer_branch = args.wasmer_ref
+            print(f"Using prebuilt Wasmer main artifact at {wasmer_bin}", flush=True)
+        else:
+            wasmer_checkout = resolve_wasmer_checkout(args, work_dir)
+            print(f"Building Wasmer from source at {wasmer_checkout}", flush=True)
+            run(["cargo", "build", "-p", "wasmer-cli", "--features", "llvm", "--release"], cwd=wasmer_checkout)
+            wasmer_bin = wasmer_checkout / "target" / "release" / "wasmer"
+            wasmer_ref = args.wasmer_ref
+            wasmer_branch = args.wasmer_ref
+            wasmer_commit = git_head_commit(wasmer_checkout)
+
+    enable_net = not args.no_net
+    source_version = php_source_version(php_checkout)
+    package_version = php_package_version(
+        wasmer_bin=str(wasmer_bin),
+        php_package=args.php_package,
+        enable_net=enable_net,
+    )
+    runtime_probe = php_wasmer_runtime_probe(
+        wasmer_bin=str(wasmer_bin),
+        php_package=args.php_package,
+        enable_net=enable_net,
+    )
+    if runtime_probe.get("runs_as_root"):
+        print(
+            "Note: Wasmer PHP reports posix_geteuid()==0; some upstream tests skip as 'root'. "
+            "See metadata.php.runtime_probe.",
+            flush=True,
+        )
+    if source_version != "unknown" and package_version != "unknown" and source_version != package_version:
+        print(
+            f"Warning: PHP source checkout is {source_version}, but {args.php_package} reports {package_version}",
+            flush=True,
+        )
+
+    if args.debug_test:
+        proc = run_php_debug(
+            wasmer_bin=str(wasmer_bin),
+            php_package=args.php_package,
+            php_cgi_package=args.php_cgi_package,
+            phpdbg_package=args.phpdbg_package,
+            no_php_cgi_shim=args.no_php_cgi_shim,
+            source_root=php_checkout,
+            work_dir=php_work_dir,
+            test_name=args.debug_test,
+            timeout=args.timeout,
+            enable_net=enable_net,
+            offline=args.offline,
+            service_env=args.service_env,
+        )
+        print(proc.stdout, end="")
+        print(proc.stderr, end="")
+        return 0 if proc.returncode == 0 else proc.returncode
+
+    write_text(log_path, "")
+    status = run_php_upstream(
+        wasmer_bin=str(wasmer_bin),
+        php_package=args.php_package,
+        php_cgi_package=args.php_cgi_package,
+        phpdbg_package=args.phpdbg_package,
+        no_php_cgi_shim=args.no_php_cgi_shim,
+        source_root=php_checkout,
+        work_dir=php_work_dir,
+        timeout=args.timeout,
+        jobs=args.jobs,
+        enable_net=enable_net,
+        offline=args.offline,
+        log_path=log_path,
+        service_env=args.service_env,
+    )
+    if not status:
+        raise SystemExit("PHP upstream run did not produce any test statuses")
+
+    inventory = phpt_inventory(php_checkout)
+    loaded_extensions = php_loaded_extensions(
+        wasmer_bin=str(wasmer_bin),
+        php_package=args.php_package,
+        enable_net=enable_net,
+    )
+
+    write_json(output_dir / "status.json", status)
+    metadata = {
+        "language": "php",
+        "wasmer": {
+            "ref": wasmer_ref,
+            "branch": wasmer_branch,
+            "commit": wasmer_commit,
+        },
+        "php": {
+            "repo": DEFAULT_PHP_REPO,
+            "ref": DEFAULT_PHP_REF,
+            "commit": DEFAULT_PHP_COMMIT,
+            "source_version": source_version,
+            "package": args.php_package,
+            "package_version": package_version,
+            "loaded_extensions": loaded_extensions,
+            "runtime_probe": runtime_probe,
+            "phpt_total": sum(inventory.values()),
+            "phpt_inventory": inventory,
+        },
+        "config": {
+            "timeout_seconds": args.timeout,
+            "debug_test": args.debug_test,
+            "jobs": args.jobs,
+            "offline": args.offline,
+            "net": enable_net,
+            "php_cgi_package": args.php_cgi_package,
+            "phpdbg_package": args.phpdbg_package,
+            "no_php_cgi_shim": args.no_php_cgi_shim,
+            "service_env": args.service_env,
+        },
+        "run": {
+            "started_at": started_at,
+            "finished_at": now_utc(),
+        },
+        "counts": counts_from_status(status),
+    }
+    write_json(output_dir / "metadata.json", metadata)
+    return 0
+
+
 def compare_statuses(baseline: dict[str, str], candidate: dict[str, str]) -> dict:
     baseline_counts = counts_from_status(baseline)
     candidate_counts = counts_from_status(candidate)
@@ -579,6 +751,19 @@ def result_label(result: dict) -> str:
     return "NO_CHANGE"
 
 
+def metadata_language(meta: dict[str, Any], default: str = "Python") -> str:
+    language = str(meta.get("language") or "").strip().lower()
+    if language == "php" or ("php" in meta and "python" not in meta):
+        return "PHP"
+    if language == "python" or "python" in meta:
+        return "Python"
+    return default
+
+
+def metadata_language_key(meta: dict[str, Any]) -> str:
+    return metadata_language(meta).lower()
+
+
 def render_summary_text(
     comparison: dict[str, Any],
     baseline_meta: dict[str, Any],
@@ -626,13 +811,14 @@ def render_comment(args: argparse.Namespace) -> int:
     comparison = load_json(Path(args.comparison))
     baseline_meta = load_json(Path(args.baseline_metadata))
     candidate_meta = load_json(Path(args.candidate_metadata))
+    language = args.language or metadata_language(candidate_meta)
     body = render_summary_text(
         comparison,
         baseline_meta,
         candidate_meta,
         results_repo=args.results_repo,
         results_commit=args.results_commit,
-        language="Python",
+        language=language,
     )
     if args.output:
         write_text(Path(args.output), body)
@@ -648,9 +834,10 @@ def prepare_pr_comment(args: argparse.Namespace) -> int:
 
     expected = (args.expected_wasmer_sha or "").strip()
     actual = candidate_meta.get("wasmer", {}).get("commit", "")
+    language = args.language or metadata_language(candidate_meta)
     if expected and actual != expected:
         body = (
-            "Python upstream result: ERROR\n\n"
+            f"{language} upstream result: ERROR\n\n"
             "compat-tests completed, but the published snapshot does not match the expected Wasmer SHA.\n\n"
             "More info:\n"
             f"- expected Wasmer SHA: `{expected}`\n"
@@ -665,7 +852,7 @@ def prepare_pr_comment(args: argparse.Namespace) -> int:
             candidate_meta,
             results_repo=args.results_repo,
             results_commit=args.results_commit,
-            language="Python",
+            language=language,
         ).rstrip()
         body += (
             "\n\nMore info:\n"
@@ -682,7 +869,8 @@ def prepare_pr_comment(args: argparse.Namespace) -> int:
     return 0
 
 
-def make_regression_issue_title(candidate_meta: dict[str, Any], language: str = "Python") -> str:
+def make_regression_issue_title(candidate_meta: dict[str, Any], language: str | None = None) -> str:
+    language = language or metadata_language(candidate_meta)
     branch = candidate_meta["wasmer"]["branch"]
     commit = candidate_meta["wasmer"]["commit"][:7]
     return f"{language} upstream regressions on {branch} @ {commit}"
@@ -696,6 +884,7 @@ def create_regression_issue(args: argparse.Namespace) -> int:
 
     baseline_meta = load_json(Path(args.baseline_metadata))
     candidate_meta = load_json(Path(args.candidate_metadata))
+    language = args.language or metadata_language(candidate_meta)
     repo = Path(args.repo).resolve() if args.repo else None
     results_commit = git_head_commit(repo) if repo and (repo / ".git").exists() else None
 
@@ -705,12 +894,12 @@ def create_regression_issue(args: argparse.Namespace) -> int:
         candidate_meta,
         results_repo=args.results_repo,
         results_commit=results_commit,
-        language="Python",
+        language=language,
     )
     if args.run_url:
         body += f"\nWorkflow run:\n- {args.run_url}\n"
 
-    title = make_regression_issue_title(candidate_meta, language="Python")
+    title = make_regression_issue_title(candidate_meta, language=language)
     body_file = (repo or Path.cwd()) / ".git" / "compat-tests-issue-body.txt" if repo else Path(".git/compat-tests-issue-body.txt")
     write_text(body_file, body)
     proc = run_capture(
@@ -801,9 +990,11 @@ def publish_snapshot(args: argparse.Namespace) -> int:
 
     branch_status = git_file_json(repo, "HEAD", "status.json")
     branch_metadata = git_file_json(repo, "HEAD", "metadata.json")
+    language_key = metadata_language_key(metadata)
     same_identity = (
-        branch_metadata.get("wasmer", {}) == metadata.get("wasmer", {})
-        and branch_metadata.get("python", {}) == metadata.get("python", {})
+        metadata_language(branch_metadata, metadata_language(metadata)) == metadata_language(metadata)
+        and branch_metadata.get("wasmer", {}) == metadata.get("wasmer", {})
+        and branch_metadata.get(language_key, {}) == metadata.get(language_key, {})
         and branch_metadata.get("config", {}) == metadata.get("config", {})
     )
     if branch_status == status and same_identity:
@@ -811,7 +1002,8 @@ def publish_snapshot(args: argparse.Namespace) -> int:
         print(git_head_commit(repo), flush=True)
         return 0
 
-    summary_text = render_summary_text(comparison, compare_meta, metadata, language="Python")
+    language = metadata_language(metadata)
+    summary_text = render_summary_text(comparison, compare_meta, metadata, language=language)
     write_json(repo / "status.json", status)
     write_json(repo / "metadata.json", metadata)
 
@@ -842,6 +1034,39 @@ def build_parser() -> argparse.ArgumentParser:
     run_python.add_argument("--debug-test")
     run_python.set_defaults(func=run_python_suite)
 
+    run_php = sub.add_parser("run-php", help="Run the upstream PHP PHPT suite against a Wasmer checkout")
+    run_php.add_argument("--wasmer-ref", default="main")
+    run_php.add_argument("--wasmer-bin")
+    run_php.add_argument("--wasmer-checkout")
+    run_php.add_argument("--timeout", type=int, default=DEFAULT_PHP_TIMEOUT, help="Per-test PHPT timeout in seconds")
+    run_php.add_argument("--jobs", type=int, default=worker_count(), help="Parallel PHPT workers for run-tests.php")
+    run_php.add_argument("--php-package", default=DEFAULT_PHP_PACKAGE)
+    run_php.add_argument(
+        "--php-cgi-package",
+        default=None,
+        help="Wasmer package for the CGI shim (default: same as --php-package). "
+        "Unless --no-php-cgi-shim is set, compat-tests writes php-wasmer-cgi and sets TEST_PHP_CGI_EXECUTABLE.",
+    )
+    run_php.add_argument(
+        "--phpdbg-package",
+        default=None,
+        help="Optional Wasmer package that provides phpdbg; if unset, phpdbg PHPTs stay skipped.",
+    )
+    run_php.add_argument(
+        "--no-php-cgi-shim",
+        action="store_true",
+        help="Do not set TEST_PHP_CGI_EXECUTABLE (upstream skips CGI sections).",
+    )
+    run_php.add_argument(
+        "--service-env",
+        action="store_true",
+        help="Merge MYSQL_* / PGSQL_TEST_CONNSTR defaults matching docker-compose.yml (host 127.0.0.1).",
+    )
+    run_php.add_argument("--offline", action="store_true", help="Pass --offline to run-tests.php")
+    run_php.add_argument("--no-net", action="store_true", help="Do not pass --net to wasmer run")
+    run_php.add_argument("--debug-test", help="Run one .phpt path, relative to the PHP checkout or absolute")
+    run_php.set_defaults(func=run_php_suite)
+
     compare = sub.add_parser("compare-status", help="Compare two status.json snapshots")
     compare.add_argument("--baseline", required=True)
     compare.add_argument("--candidate", required=True)
@@ -854,6 +1079,7 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--candidate-metadata", required=True)
     comment.add_argument("--results-repo")
     comment.add_argument("--results-commit")
+    comment.add_argument("--language")
     comment.add_argument("--output")
     comment.set_defaults(func=render_comment)
 
@@ -866,6 +1092,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr_comment.add_argument("--run-url", required=True)
     pr_comment.add_argument("--log-artifact-url", required=True)
     pr_comment.add_argument("--expected-wasmer-sha")
+    pr_comment.add_argument("--language")
     pr_comment.add_argument("--output")
     pr_comment.set_defaults(func=prepare_pr_comment)
 
@@ -886,6 +1113,7 @@ def build_parser() -> argparse.ArgumentParser:
     issue.add_argument("--candidate-metadata", required=True)
     issue.add_argument("--results-repo")
     issue.add_argument("--run-url")
+    issue.add_argument("--language")
     issue.set_defaults(func=create_regression_issue)
 
     return parser

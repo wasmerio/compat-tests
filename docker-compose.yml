@@ -1,0 +1,36 @@
+# Optional backing services for PHP PHPT runs (mysqli, pgsql, PDO, etc.).
+# Start before compat-tests:
+#   docker compose up -d
+# Then run with service env merged into the run-tests child process:
+#   python3 main.py run-php --wasmer-bin ~/.wasmer/bin/wasmer --service-env
+#
+# Ports are published on the host so Wasmer PHP (still a host process) can
+# reach MySQL and Postgres via 127.0.0.1.
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: compat_root
+      MYSQL_DATABASE: test
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pcompat_root"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: compat_postgres
+      POSTGRES_DB: test
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d test"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
