@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -23,6 +26,12 @@ DEFAULT_TOOLCHAIN = "wasix"
 DEFAULT_TIMEOUT = 1800
 DEFAULT_REPORT = Path(".work/rust-upstream/build-report.json")
 DEFAULT_LOG = Path(".work/rust-upstream/build.log")
+DEFAULT_RUN_REPORT = Path(".work/rust-upstream/run-report.json")
+DEFAULT_RUN_LOG = Path(".work/rust-upstream/run.log")
+DEFAULT_RUN_TIMEOUT = 600
+DEFAULT_COMPILE_TIMEOUT = 3600
+DEFAULT_COMPILE_DIR = Path(".work/rust-upstream/wasmu-cache")
+DEFAULT_WASMER_BIN = Path("~/wasmer/wasmer2/target/debug/wasmer")
 DEFAULT_GIT_CONFIG = Path(".work/rust-upstream/gitconfig")
 DEFAULT_CARGO_PATCH_CONFIG = Path(".work/rust-upstream/cargo-patches.toml")
 DEFAULT_WASIX_SYSROOT_LINK = Path(".work/rust-upstream/wasix-sysroot32")
@@ -45,6 +54,10 @@ LIBRARY_BUILD_ONLY_PACKAGES = {
     "test",
     "unwind",
 }
+
+EXECUTABLE_PATH_RE = re.compile(r"Executable .+ \((?P<path>[^)]+\.wasm)\)")
+RUST_TEST_LIST_RE = re.compile(r"^(?P<name>.+): (?:test|benchmark)$")
+RUST_TEST_STATUS_RE = re.compile(r"^test (?P<name>.+) \.\.\. (?P<status>ok|FAILED|ignored)(?: .*)?$")
 
 SUBMODULES = (
     "library/backtrace",
@@ -1012,6 +1025,53 @@ class BuildResult:
     stderr_tail: str
 
 
+@dataclass
+class TestBinary:
+    build_index: int
+    workspace: str
+    package: str
+    workspace_path: str
+    artifact_path: str
+    wasmer_run_path: str
+    precompile_status: str
+    precompile_elapsed_seconds: float
+    precompile_exit_code: int | None
+    precompile_stdout_tail: str
+    precompile_stderr_tail: str
+    test_names: list[str]
+    list_status: str
+    list_elapsed_seconds: float
+    list_exit_code: int | None
+    list_stdout_tail: str
+    list_stderr_tail: str
+
+
+@dataclass
+class RunCaseResult:
+    workspace: str
+    package: str
+    artifact_path: str
+    test_name: str
+    status: str
+
+
+@dataclass
+class RunBinaryResult:
+    build_index: int
+    workspace: str
+    package: str
+    workspace_path: str
+    artifact_path: str
+    status: str
+    elapsed_seconds: float
+    exit_code: int | None
+    discovered_tests: int
+    status_counts: dict[str, int]
+    stdout_tail: str
+    stderr_tail: str
+    cases: list[RunCaseResult]
+
+
 def build_one(item: dict[str, Any], args: argparse.Namespace, env: dict[str, str]) -> BuildResult:
     started = time.time()
     cmd = build_command(item, args)
@@ -1086,6 +1146,27 @@ def summarize(results: list[BuildResult]) -> dict[str, Any]:
     }
 
 
+def summarize_run_results(results: list[RunBinaryResult]) -> dict[str, Any]:
+    status_counts = {"PASS": 0, "FAIL": 0, "TIMEOUT": 0, "SKIP": 0}
+    by_workspace: dict[str, dict[str, int]] = {}
+    by_package: dict[str, dict[str, int]] = {}
+    for result in results:
+        for status, count in result.status_counts.items():
+            status_counts[status] = status_counts.get(status, 0) + count
+            workspace_counts = by_workspace.setdefault(result.workspace, {"PASS": 0, "FAIL": 0, "TIMEOUT": 0, "SKIP": 0})
+            workspace_counts[status] = workspace_counts.get(status, 0) + count
+            package_key = f"{result.workspace}::{result.package}"
+            package_counts = by_package.setdefault(package_key, {"PASS": 0, "FAIL": 0, "TIMEOUT": 0, "SKIP": 0})
+            package_counts[status] = package_counts.get(status, 0) + count
+    return {
+        "total": sum(status_counts.values()),
+        "status_counts": status_counts,
+        "binaries": len(results),
+        "by_workspace": by_workspace,
+        "by_package": by_package,
+    }
+
+
 def write_report(repo: Path, targets: list[dict[str, Any]], results: list[BuildResult], args: argparse.Namespace) -> None:
     head = run(["git", "rev-parse", "HEAD"], cwd=repo, capture=True).stdout.strip()
     report = {
@@ -1107,6 +1188,624 @@ def write_report(repo: Path, targets: list[dict[str, Any]], results: list[BuildR
     write_json(args.report, report)
 
 
+def load_build_report(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text())
+
+
+def build_results_from_report(report: dict[str, Any]) -> list[BuildResult]:
+    return [BuildResult(**item) for item in report.get("results", [])]
+
+
+def select_build_results(results: list[BuildResult], args: argparse.Namespace) -> list[BuildResult]:
+    package_filters = set(args.package)
+    selected: list[BuildResult] = []
+    for result in results:
+        workspace_package = f"{result.workspace}::{result.package}"
+        if package_filters and result.package not in package_filters and workspace_package not in package_filters:
+            continue
+        if result.index < args.start_index:
+            continue
+        if args.max_targets is not None and result.index >= args.start_index + args.max_targets:
+            continue
+        selected.append(result)
+    return selected
+
+
+def normalized_artifact_prefix(value: str) -> str:
+    return value.replace("-", "_")
+
+
+def artifact_stem_matches(path: Path, candidates: set[str]) -> bool:
+    stem = path.name.removesuffix(".wasm")
+    normalized_candidates = {normalized_artifact_prefix(candidate) for candidate in candidates if candidate}
+    return any(stem == candidate or stem.startswith(f"{candidate}-") for candidate in normalized_candidates)
+
+
+def executable_paths_from_build_result(result: BuildResult, target: str) -> list[Path]:
+    if result.status != "PASS":
+        return []
+    if result.workspace == "library" and result.package in LIBRARY_BUILD_ONLY_PACKAGES:
+        return []
+
+    workspace = Path(result.workspace_path)
+    paths: list[Path] = []
+    for text in (result.stdout_tail, result.stderr_tail):
+        for match in EXECUTABLE_PATH_RE.finditer(text):
+            path = Path(match.group("path"))
+            if not path.is_absolute():
+                path = workspace / path
+            if path.exists():
+                paths.append(path.resolve())
+
+    if not paths:
+        deps_dir = workspace / "target" / target / "debug" / "deps"
+        candidates = set(result.target_names)
+        candidates.add(result.package)
+        if deps_dir.exists():
+            paths.extend(path.resolve() for path in sorted(deps_dir.glob("*.wasm")) if artifact_stem_matches(path, candidates))
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        deduped.append(path)
+    return deduped
+
+
+def discover_test_binaries(results: list[BuildResult], args: argparse.Namespace) -> list[dict[str, Any]]:
+    binaries: list[dict[str, Any]] = []
+    for result in results:
+        for artifact in executable_paths_from_build_result(result, args.target):
+            binaries.append(
+                {
+                    "build_index": result.index,
+                    "workspace": result.workspace,
+                    "package": result.package,
+                    "workspace_path": result.workspace_path,
+                    "artifact_path": str(artifact),
+                }
+            )
+    if args.max_run_binaries is not None:
+        binaries = binaries[: args.max_run_binaries]
+    return binaries
+
+
+def precompile_output_path(compile_dir: Path, wasm_path: Path) -> Path:
+    digest = hashlib.sha256(str(wasm_path.resolve()).encode()).hexdigest()[:24]
+    return compile_dir / f"{digest}.wasmu"
+
+
+def wasmer_compile_command(args: argparse.Namespace, wasm_path: str, output_path: Path) -> list[str]:
+    cmd = [str(args.wasmer_bin), "compile", "-o", str(output_path)]
+    if args.wasmer_llvm:
+        cmd.append("--llvm")
+    cmd.extend(args.wasmer_compile_arg)
+    cmd.append(wasm_path)
+    return cmd
+
+
+def precompile_one(item: dict[str, Any], args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return enriched item (wasmer_run_path, precompile_*) and a JSON-serializable row for reports."""
+    wasm_path = Path(item["artifact_path"])
+    row: dict[str, Any] = {
+        "artifact_path": str(wasm_path),
+        "workspace": item["workspace"],
+        "package": item["package"],
+    }
+    if not args.precompile_wasmer:
+        enriched = {
+            **item,
+            "wasmer_run_path": str(wasm_path),
+            "precompile_status": "SKIP",
+            "precompile_elapsed_seconds": 0.0,
+            "precompile_exit_code": None,
+            "precompile_stdout_tail": "",
+            "precompile_stderr_tail": "",
+        }
+        row.update({"precompile_status": "SKIP", "wasmer_run_path": str(wasm_path)})
+        return enriched, row
+
+    args.compile_dir.mkdir(parents=True, exist_ok=True)
+    out_path = precompile_output_path(args.compile_dir, wasm_path)
+    started = time.time()
+    cmd = wasmer_compile_command(args, str(wasm_path), out_path)
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=item["workspace_path"],
+            text=True,
+            capture_output=True,
+            timeout=args.compile_timeout,
+        )
+        elapsed = time.time() - started
+        stdout_tail = trim(proc.stdout)
+        stderr_tail = trim(proc.stderr)
+        if proc.returncode == 0 and out_path.exists():
+            status = "PASS"
+            run_path = str(out_path.resolve())
+        else:
+            status = "FAIL"
+            run_path = str(wasm_path)
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.time() - started
+        status = "TIMEOUT"
+        run_path = str(wasm_path)
+        stdout_tail = trim(decode_timeout_output(exc.stdout))
+        stderr_tail = trim(decode_timeout_output(exc.stderr))
+        proc = None
+
+    exit_code = proc.returncode if proc is not None else None
+    enriched = {
+        **item,
+        "wasmer_run_path": run_path,
+        "precompile_status": status,
+        "precompile_elapsed_seconds": round(elapsed, 3),
+        "precompile_exit_code": exit_code,
+        "precompile_stdout_tail": stdout_tail,
+        "precompile_stderr_tail": stderr_tail,
+    }
+    row.update(
+        {
+            "precompile_status": status,
+            "wasmer_run_path": run_path,
+            "wasmer_compile_output": str(out_path) if status == "PASS" else None,
+            "precompile_elapsed_seconds": enriched["precompile_elapsed_seconds"],
+            "precompile_exit_code": exit_code,
+            "precompile_stdout_tail": enriched["precompile_stdout_tail"],
+            "precompile_stderr_tail": enriched["precompile_stderr_tail"],
+        }
+    )
+    return enriched, row
+
+
+def precompile_all(artifact_items: list[dict[str, Any]], args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not artifact_items:
+        return [], []
+    if not args.precompile_wasmer:
+        rows: list[dict[str, Any]] = []
+        enriched: list[dict[str, Any]] = []
+        for item in artifact_items:
+            e, r = precompile_one(item, args)
+            enriched.append(e)
+            rows.append(r)
+        return enriched, rows
+
+    workers = min(max(args.run_workers, 1), len(artifact_items))
+    enriched = [None] * len(artifact_items)  # type: ignore[list-item]
+    rows = [None] * len(artifact_items)  # type: ignore[list-item]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_index = {
+            pool.submit(precompile_one, item, args): index for index, item in enumerate(artifact_items)
+        }
+        for future in concurrent.futures.as_completed(future_to_index):
+            index = future_to_index[future]
+            e, r = future.result()
+            enriched[index] = e
+            rows[index] = r
+    return enriched, rows  # type: ignore[return-value]
+
+
+def summarize_precompile(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"PASS": 0, "FAIL": 0, "TIMEOUT": 0, "SKIP": 0}
+    for row in rows:
+        status = row.get("precompile_status", "SKIP")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def wasmer_run_command(args: argparse.Namespace, workspace_path: str, artifact_path: str, guest_args: list[str]) -> list[str]:
+    cmd = [str(args.wasmer_bin), "run"]
+    if args.wasmer_llvm:
+        cmd.append("--llvm")
+    cmd.extend(args.wasmer_arg)
+    if args.run_net:
+        cmd.append("--net")
+    for volume in args.run_volume:
+        cmd.extend(["--volume", volume])
+    workspace = str(Path(workspace_path))
+    cmd.extend(["--volume", f"{workspace}:{workspace}", "--cwd", workspace])
+    if args.run_forward_host_env:
+        cmd.append("--forward-host-env")
+    for env_pair in args.run_env:
+        cmd.extend(["--env", env_pair])
+    cmd.append(artifact_path)
+    if guest_args:
+        cmd.append("--")
+        cmd.extend(guest_args)
+    return cmd
+
+
+def decode_timeout_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value or ""
+
+
+def parse_listed_tests(stdout: str) -> list[str]:
+    names = []
+    for line in stdout.splitlines():
+        match = RUST_TEST_LIST_RE.match(line.strip())
+        if match:
+            names.append(match.group("name"))
+    return sorted(set(names))
+
+
+def discover_one_test_binary(item: dict[str, Any], args: argparse.Namespace) -> TestBinary:
+    pre = {
+        "wasmer_run_path": item.get("wasmer_run_path", item["artifact_path"]),
+        "precompile_status": item.get("precompile_status", "SKIP"),
+        "precompile_elapsed_seconds": float(item.get("precompile_elapsed_seconds", 0.0)),
+        "precompile_exit_code": item.get("precompile_exit_code"),
+        "precompile_stdout_tail": item.get("precompile_stdout_tail", ""),
+        "precompile_stderr_tail": item.get("precompile_stderr_tail", ""),
+    }
+    if pre["precompile_status"] in ("FAIL", "TIMEOUT"):
+        return TestBinary(
+            build_index=item["build_index"],
+            workspace=item["workspace"],
+            package=item["package"],
+            workspace_path=item["workspace_path"],
+            artifact_path=item["artifact_path"],
+            wasmer_run_path=pre["wasmer_run_path"],
+            precompile_status=pre["precompile_status"],
+            precompile_elapsed_seconds=pre["precompile_elapsed_seconds"],
+            precompile_exit_code=pre["precompile_exit_code"],
+            precompile_stdout_tail=pre["precompile_stdout_tail"],
+            precompile_stderr_tail=pre["precompile_stderr_tail"],
+            test_names=[],
+            list_status=pre["precompile_status"],
+            list_elapsed_seconds=0.0,
+            list_exit_code=pre["precompile_exit_code"],
+            list_stdout_tail=pre["precompile_stdout_tail"],
+            list_stderr_tail=pre["precompile_stderr_tail"],
+        )
+
+    started = time.time()
+    cmd = wasmer_run_command(args, item["workspace_path"], pre["wasmer_run_path"], ["--list", "--format", "terse"])
+    try:
+        proc = subprocess.run(cmd, cwd=item["workspace_path"], text=True, capture_output=True, timeout=args.run_timeout)
+        elapsed = time.time() - started
+        names = parse_listed_tests(proc.stdout)
+        status = "PASS" if proc.returncode == 0 else "FAIL"
+        exit_code = proc.returncode
+        stdout_tail = trim(proc.stdout)
+        stderr_tail = trim(proc.stderr)
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.time() - started
+        names = []
+        status = "TIMEOUT"
+        exit_code = None
+        stdout_tail = trim(decode_timeout_output(exc.stdout))
+        stderr_tail = trim(decode_timeout_output(exc.stderr))
+
+    return TestBinary(
+        build_index=item["build_index"],
+        workspace=item["workspace"],
+        package=item["package"],
+        workspace_path=item["workspace_path"],
+        artifact_path=item["artifact_path"],
+        wasmer_run_path=pre["wasmer_run_path"],
+        precompile_status=pre["precompile_status"],
+        precompile_elapsed_seconds=pre["precompile_elapsed_seconds"],
+        precompile_exit_code=pre["precompile_exit_code"],
+        precompile_stdout_tail=pre["precompile_stdout_tail"],
+        precompile_stderr_tail=pre["precompile_stderr_tail"],
+        test_names=names,
+        list_status=status,
+        list_elapsed_seconds=round(elapsed, 3),
+        list_exit_code=exit_code,
+        list_stdout_tail=stdout_tail,
+        list_stderr_tail=stderr_tail,
+    )
+
+
+def parse_rust_test_statuses(stdout: str, stderr: str) -> dict[str, str]:
+    statuses: dict[str, str] = {}
+    for line in f"{stdout}\n{stderr}".splitlines():
+        match = RUST_TEST_STATUS_RE.match(line.strip())
+        if not match:
+            continue
+        status = match.group("status")
+        if status == "ok":
+            statuses[match.group("name")] = "PASS"
+        elif status == "ignored":
+            statuses[match.group("name")] = "SKIP"
+        else:
+            statuses[match.group("name")] = "FAIL"
+    return statuses
+
+
+def status_counts_from_cases(cases: list[RunCaseResult]) -> dict[str, int]:
+    counts = {"PASS": 0, "FAIL": 0, "TIMEOUT": 0, "SKIP": 0}
+    for case in cases:
+        counts[case.status] = counts.get(case.status, 0) + 1
+    return counts
+
+
+def run_one_test_binary(binary: TestBinary, args: argparse.Namespace) -> RunBinaryResult:
+    started = time.time()
+    if binary.precompile_status in ("FAIL", "TIMEOUT"):
+        label = "TIMEOUT" if binary.precompile_status == "TIMEOUT" else "FAIL"
+        case_name = f"{Path(binary.artifact_path).name}::precompile"
+        case = RunCaseResult(binary.workspace, binary.package, binary.artifact_path, case_name, label)
+        counts = {"PASS": 0, "FAIL": 0, "TIMEOUT": 0, "SKIP": 0}
+        counts[label] = 1
+        return RunBinaryResult(
+            build_index=binary.build_index,
+            workspace=binary.workspace,
+            package=binary.package,
+            workspace_path=binary.workspace_path,
+            artifact_path=binary.artifact_path,
+            status=label,
+            elapsed_seconds=binary.precompile_elapsed_seconds,
+            exit_code=binary.precompile_exit_code,
+            discovered_tests=0,
+            status_counts=counts,
+            stdout_tail=binary.precompile_stdout_tail,
+            stderr_tail=binary.precompile_stderr_tail,
+            cases=[case],
+        )
+
+    if binary.list_status == "TIMEOUT":
+        case_name = f"{Path(binary.artifact_path).name}::list"
+        case = RunCaseResult(binary.workspace, binary.package, binary.artifact_path, case_name, "TIMEOUT")
+        return RunBinaryResult(
+            build_index=binary.build_index,
+            workspace=binary.workspace,
+            package=binary.package,
+            workspace_path=binary.workspace_path,
+            artifact_path=binary.artifact_path,
+            status="TIMEOUT",
+            elapsed_seconds=binary.list_elapsed_seconds,
+            exit_code=None,
+            discovered_tests=0,
+            status_counts={"PASS": 0, "FAIL": 0, "TIMEOUT": 1, "SKIP": 0},
+            stdout_tail=binary.list_stdout_tail,
+            stderr_tail=binary.list_stderr_tail,
+            cases=[case],
+        )
+
+    if binary.list_status != "PASS":
+        case_name = f"{Path(binary.artifact_path).name}::list"
+        case = RunCaseResult(binary.workspace, binary.package, binary.artifact_path, case_name, "FAIL")
+        return RunBinaryResult(
+            build_index=binary.build_index,
+            workspace=binary.workspace,
+            package=binary.package,
+            workspace_path=binary.workspace_path,
+            artifact_path=binary.artifact_path,
+            status="FAIL",
+            elapsed_seconds=binary.list_elapsed_seconds,
+            exit_code=binary.list_exit_code,
+            discovered_tests=0,
+            status_counts={"PASS": 0, "FAIL": 1, "TIMEOUT": 0, "SKIP": 0},
+            stdout_tail=binary.list_stdout_tail,
+            stderr_tail=binary.list_stderr_tail,
+            cases=[case],
+        )
+
+    guest_args = [*args.run_test_arg]
+    cmd = wasmer_run_command(args, binary.workspace_path, binary.wasmer_run_path, guest_args)
+    timed_out = False
+    try:
+        proc = subprocess.run(cmd, cwd=binary.workspace_path, text=True, capture_output=True, timeout=args.run_timeout)
+        elapsed = time.time() - started
+        stdout = proc.stdout
+        stderr = proc.stderr
+        exit_code: int | None = proc.returncode
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.time() - started
+        stdout = decode_timeout_output(exc.stdout)
+        stderr = decode_timeout_output(exc.stderr)
+        exit_code = None
+        timed_out = True
+
+    parsed_statuses = parse_rust_test_statuses(stdout, stderr)
+    expected = set(binary.test_names)
+    cases: list[RunCaseResult] = []
+
+    for name in sorted(expected):
+        if name in parsed_statuses:
+            status = parsed_statuses[name]
+        elif timed_out:
+            status = "TIMEOUT"
+        elif exit_code == 0:
+            status = "PASS"
+        else:
+            status = "FAIL"
+        cases.append(RunCaseResult(binary.workspace, binary.package, binary.artifact_path, name, status))
+
+    for name, status in sorted(parsed_statuses.items()):
+        if name not in expected:
+            cases.append(RunCaseResult(binary.workspace, binary.package, binary.artifact_path, name, status))
+
+    if not cases and timed_out:
+        cases.append(
+            RunCaseResult(binary.workspace, binary.package, binary.artifact_path, f"{Path(binary.artifact_path).name}::run", "TIMEOUT")
+        )
+    elif not cases and exit_code:
+        cases.append(RunCaseResult(binary.workspace, binary.package, binary.artifact_path, f"{Path(binary.artifact_path).name}::run", "FAIL"))
+
+    counts = status_counts_from_cases(cases)
+    if counts["TIMEOUT"]:
+        status = "TIMEOUT"
+    elif counts["FAIL"]:
+        status = "FAIL"
+    else:
+        status = "PASS"
+
+    return RunBinaryResult(
+        build_index=binary.build_index,
+        workspace=binary.workspace,
+        package=binary.package,
+        workspace_path=binary.workspace_path,
+        artifact_path=binary.artifact_path,
+        status=status,
+        elapsed_seconds=round(elapsed, 3),
+        exit_code=exit_code,
+        discovered_tests=len(binary.test_names),
+        status_counts=counts,
+        stdout_tail=trim(stdout),
+        stderr_tail=trim(stderr),
+        cases=cases,
+    )
+
+
+def append_run_log(path: Path, lock: threading.Lock, header: str, stdout: str, stderr: str) -> None:
+    parts = [f"===== [{now_utc()}] {header} =====", "[stdout]", stdout, "[stderr]", stderr, ""]
+    with lock:
+        append_log(path, "\n".join(parts))
+
+
+def write_run_report(
+    build_report: dict[str, Any] | None,
+    binaries: list[TestBinary],
+    results: list[RunBinaryResult],
+    args: argparse.Namespace,
+    *,
+    precompile_rows: list[dict[str, Any]] | None = None,
+) -> None:
+    rows = precompile_rows
+    if rows is None:
+        rows = [
+            {
+                "artifact_path": b.artifact_path,
+                "workspace": b.workspace,
+                "package": b.package,
+                "precompile_status": b.precompile_status,
+                "wasmer_run_path": b.wasmer_run_path,
+                "precompile_elapsed_seconds": b.precompile_elapsed_seconds,
+                "precompile_exit_code": b.precompile_exit_code,
+                "precompile_stdout_tail": b.precompile_stdout_tail,
+                "precompile_stderr_tail": b.precompile_stderr_tail,
+            }
+            for b in binaries
+        ]
+    report = {
+        "generated_at": now_utc(),
+        "build_report": str(args.report),
+        "rust_repo": build_report.get("rust_repo") if build_report else None,
+        "rust_ref": build_report.get("rust_ref") if build_report else args.rust_ref,
+        "rust_head": build_report.get("rust_head") if build_report else None,
+        "target": args.target,
+        "wasmer_bin": str(args.wasmer_bin),
+        "wasmer_llvm": args.wasmer_llvm,
+        "precompile_wasmer": args.precompile_wasmer,
+        "compile_wasmer_only": args.compile_wasmer_only,
+        "compile_dir": str(args.compile_dir),
+        "compile_timeout": args.compile_timeout,
+        "precompile_summary": summarize_precompile(rows),
+        "precompile_rows": rows,
+        "run_net": args.run_net,
+        "run_timeout": args.run_timeout,
+        "run_test_args": args.run_test_arg,
+        "discovered_binaries": len(binaries),
+        "discovered_tests": sum(len(binary.test_names) for binary in binaries),
+        "list_failures": [
+            asdict(binary)
+            for binary in binaries
+            if binary.list_status != "PASS"
+        ],
+        "summary": summarize_run_results(results),
+        "binaries": [
+            {
+                key: value
+                for key, value in asdict(result).items()
+                if key != "cases"
+            }
+            for result in results
+        ],
+        "cases": [asdict(case) for result in results for case in result.cases],
+    }
+    write_json(args.run_report, report)
+
+
+def run_rust_tests(build_results: list[BuildResult], args: argparse.Namespace, build_report: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not args.wasmer_bin.exists():
+        raise FileNotFoundError(f"Wasmer binary not found: {args.wasmer_bin}")
+
+    artifact_items = discover_test_binaries(build_results, args)
+    workers = min(max(args.run_workers, 1), max(len(artifact_items), 1))
+
+    if args.precompile_wasmer:
+        print(
+            f"Discovered {len(artifact_items)} wasm test binaries; precompiling with Wasmer (`wasmer compile`) using {workers} workers...",
+            flush=True,
+        )
+    else:
+        print(f"Discovered {len(artifact_items)} wasm test binaries (--skip-precompile: listing will compile on first `wasmer run`).", flush=True)
+
+    enriched_items, precompile_rows = precompile_all(artifact_items, args)
+    if args.precompile_wasmer and artifact_items:
+        pc = summarize_precompile(precompile_rows)
+        print(
+            f"Precompile finished: PASS {pc['PASS']} / FAIL {pc['FAIL']} / TIMEOUT {pc['TIMEOUT']} / SKIP {pc['SKIP']}",
+            flush=True,
+        )
+
+    if args.compile_wasmer_only:
+        write_run_report(build_report, [], [], args, precompile_rows=precompile_rows)
+        print(f"Compile-only report: {args.run_report}", flush=True)
+        return {"status_counts": summarize_run_results([])["status_counts"], "precompile_summary": summarize_precompile(precompile_rows), "compile_only": True}
+
+    print(f"Listing tests with {workers} workers (`wasmer run` on wasm or .wasmu)...", flush=True)
+
+    binaries: list[TestBinary] = []
+    if enriched_items:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(discover_one_test_binary, item, args): item for item in enriched_items}
+            completed = 0
+            for future in concurrent.futures.as_completed(futures):
+                binary = future.result()
+                binaries.append(binary)
+                completed += 1
+                if completed % 25 == 0 or completed == len(enriched_items):
+                    listed_tests = sum(len(item.test_names) for item in binaries)
+                    print(f"Listed {completed}/{len(enriched_items)} binaries covering {listed_tests} tests", flush=True)
+
+    binaries.sort(key=lambda item: (item.workspace, item.package, item.artifact_path))
+    total_tests = sum(len(binary.test_names) for binary in binaries)
+    print(f"Running {len(binaries)} wasm binaries covering {total_tests} listed tests with {workers} workers...", flush=True)
+
+    args.run_log.parent.mkdir(parents=True, exist_ok=True)
+    args.run_log.write_text("")
+    log_lock = threading.Lock()
+    results: list[RunBinaryResult] = []
+    completed_cases = 0
+
+    if binaries:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(run_one_test_binary, binary, args): binary for binary in binaries}
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                results.append(result)
+                append_run_log(
+                    args.run_log,
+                    log_lock,
+                    f"{result.workspace}::{result.package} {Path(result.artifact_path).name} {result.status} {result.elapsed_seconds:.1f}s",
+                    result.stdout_tail,
+                    result.stderr_tail,
+                )
+                for case in result.cases:
+                    completed_cases += 1
+                    print(f"[{completed_cases}/{max(total_tests, completed_cases)}] {case.test_name} {case.status}", flush=True)
+
+    results.sort(key=lambda item: (item.workspace, item.package, item.artifact_path))
+    write_run_report(build_report, binaries, results, args, precompile_rows=precompile_rows)
+    summary = summarize_run_results(results)
+    counts = summary["status_counts"]
+    print(
+        f"Finished test run: PASS {counts['PASS']} / FAIL {counts['FAIL']} / "
+        f"TIMEOUT {counts['TIMEOUT']} / SKIP {counts['SKIP']} / TOTAL {summary['total']}",
+        flush=True,
+    )
+    print(f"Run report: {args.run_report}", flush=True)
+    print(f"Run log: {args.run_log}", flush=True)
+    return summary
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build Rust upstream Cargo packages with `cargo test --no-run` for WASIX without patching sources.")
     parser.add_argument("--rust-repo-url", default=DEFAULT_RUST_REPO_URL)
@@ -1118,10 +1817,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--log", type=Path, default=DEFAULT_LOG)
+    parser.add_argument("--run-report", type=Path, default=DEFAULT_RUN_REPORT)
+    parser.add_argument("--run-log", type=Path, default=DEFAULT_RUN_LOG)
     parser.add_argument("--git-config", type=Path, default=DEFAULT_GIT_CONFIG)
     parser.add_argument("--cargo-patch-config", type=Path, default=DEFAULT_CARGO_PATCH_CONFIG)
     parser.add_argument("--wasix-sysroot", type=Path)
     parser.add_argument("--wasix-sysroot-link", type=Path, default=DEFAULT_WASIX_SYSROOT_LINK)
+    parser.add_argument("--wasmer-bin", type=Path, default=DEFAULT_WASMER_BIN)
+    parser.add_argument("--wasmer-arg", action="append", default=[], help="Extra argument passed to `wasmer run` before the wasm path.")
+    parser.add_argument("--no-wasmer-llvm", dest="wasmer_llvm", action="store_false", help="Do not pass `--llvm` to Wasmer.")
+    parser.set_defaults(wasmer_llvm=True)
     parser.add_argument("--fresh", action="store_true", help="Delete and reclone the Rust checkout before building.")
     parser.add_argument(
         "--locked",
@@ -1151,6 +1856,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.set_defaults(rust_source_fixups=True)
     parser.add_argument("--list-only", action="store_true", help="Discover targets and write a report without building.")
+    parser.add_argument("--run-tests", action="store_true", help="Run produced wasm test binaries with Wasmer after building.")
+    parser.add_argument("--run-only", action="store_true", help="Skip building and run wasm test binaries from an existing build report.")
+    parser.add_argument("--run-timeout", type=int, default=DEFAULT_RUN_TIMEOUT, help="Timeout in seconds per wasm test binary.")
+    parser.add_argument("--run-workers", type=int, default=min(4, os.cpu_count() or 1), help="Number of concurrent Wasmer test runs.")
+    parser.add_argument("--max-run-binaries", type=int, help="Limit the number of wasm test binaries to run after artifact discovery.")
+    parser.add_argument("--run-test-arg", action="append", default=["--test-threads=1"], help="Argument passed to each Rust test binary.")
+    parser.add_argument("--run-volume", action="append", default=[], help="Extra Wasmer volume mapping, in HOST:GUEST form.")
+    parser.add_argument("--run-env", action="append", default=[], help="Environment variable passed to the guest, in KEY=VALUE form.")
+    parser.add_argument("--no-run-net", dest="run_net", action="store_false", help="Do not pass `--net` to Wasmer.")
+    parser.set_defaults(run_net=True)
+    parser.add_argument("--run-forward-host-env", action="store_true", help="Forward host environment variables to each guest test binary.")
     parser.add_argument(
         "--package",
         action="append",
@@ -1159,6 +1875,43 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-index", type=int, default=0)
     parser.add_argument("--max-targets", type=int)
+    precompile = parser.add_mutually_exclusive_group()
+    precompile.add_argument(
+        "--precompile",
+        dest="precompile_wasmer",
+        action="store_true",
+        help="Run `wasmer compile` on each wasm before list/run (default when running tests).",
+    )
+    precompile.add_argument(
+        "--skip-precompile",
+        dest="precompile_wasmer",
+        action="store_false",
+        help="Skip `wasmer compile`; `wasmer run` will compile implicitly (with cache).",
+    )
+    parser.set_defaults(precompile_wasmer=True)
+    parser.add_argument(
+        "--compile-wasmer-only",
+        action="store_true",
+        help="After precompile, write the run report and exit (no `wasmer run` list or test execution).",
+    )
+    parser.add_argument(
+        "--compile-dir",
+        type=Path,
+        default=DEFAULT_COMPILE_DIR,
+        help="Directory for `wasmer compile` output (.wasmu), keyed by wasm path hash.",
+    )
+    parser.add_argument(
+        "--compile-timeout",
+        type=int,
+        default=DEFAULT_COMPILE_TIMEOUT,
+        help="Timeout in seconds per `wasmer compile` invocation.",
+    )
+    parser.add_argument(
+        "--wasmer-compile-arg",
+        action="append",
+        default=[],
+        help="Extra argument passed to `wasmer compile` after compiler flags (e.g. `--compiler-threads=4`).",
+    )
     return parser.parse_args()
 
 
@@ -1167,11 +1920,34 @@ def main() -> int:
     args.work_dir = args.work_dir.resolve()
     args.report = args.report.resolve()
     args.log = args.log.resolve()
+    args.run_report = args.run_report.resolve()
+    args.run_log = args.run_log.resolve()
     args.git_config = args.git_config.resolve()
     args.cargo_patch_config = args.cargo_patch_config.resolve()
+    args.wasmer_bin = args.wasmer_bin.expanduser().resolve()
     if args.wasix_sysroot is not None:
         args.wasix_sysroot = args.wasix_sysroot.resolve()
     args.wasix_sysroot_link = Path.absolute(args.wasix_sysroot_link)
+    args.compile_dir = args.compile_dir.resolve()
+    if args.compile_wasmer_only and not args.run_only and not args.run_tests:
+        print("error: --compile-wasmer-only requires --run-only or --run-tests", file=sys.stderr)
+        return 2
+
+    if args.run_only:
+        build_report = load_build_report(args.report)
+        build_results = build_results_from_report(build_report)
+        selected_results = select_build_results(build_results, args)
+        selected_passes = [result for result in selected_results if result.status == "PASS"]
+        print(
+            f"Loaded {len(build_results)} build results; selected {len(selected_passes)} successful package builds for running.",
+            flush=True,
+        )
+        summary = run_rust_tests(selected_passes, args, build_report)
+        if summary.get("compile_only"):
+            pc = summary["precompile_summary"]
+            return 0 if pc.get("FAIL", 0) == 0 and pc.get("TIMEOUT", 0) == 0 else 1
+        counts = summary["status_counts"]
+        return 0 if counts["FAIL"] == 0 and counts["TIMEOUT"] == 0 else 1
 
     env = cargo_env(args)
     repo = clone_or_update_rust(args)
@@ -1222,6 +1998,17 @@ def main() -> int:
     )
     print(f"Report: {args.report}", flush=True)
     print(f"Log: {args.log}", flush=True)
+    if args.run_tests:
+        build_report = load_build_report(args.report)
+        summary = run_rust_tests([result for result in results if result.status == "PASS"], args, build_report)
+        if summary.get("compile_only"):
+            pc = summary["precompile_summary"]
+            if pc.get("FAIL", 0) != 0 or pc.get("TIMEOUT", 0) != 0:
+                return 1
+            return 0 if counts["FAIL"] == 0 and counts["TIMEOUT"] == 0 else 1
+        run_counts = summary["status_counts"]
+        if run_counts["FAIL"] != 0 or run_counts["TIMEOUT"] != 0:
+            return 1
     return 0 if counts["FAIL"] == 0 and counts["TIMEOUT"] == 0 else 1
 
 
