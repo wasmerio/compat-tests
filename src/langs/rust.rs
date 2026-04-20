@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use super::{LangRunner, Mode, RunnerOpts, TestResult, Workspace};
+use crate::run_log::RunLog;
 use crate::wasmer::WasmerRuntime;
 
 pub struct RustRunner;
@@ -28,6 +29,7 @@ impl LangRunner for RustRunner {
         _wasmer: &WasmerRuntime,
         _id: &str,
         _mode: Mode,
+        _log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
         unimplemented!()
     }

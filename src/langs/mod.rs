@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+use crate::run_log::RunLog;
 use crate::wasmer::WasmerRuntime;
 
 pub struct RunnerOpts {
@@ -18,6 +19,7 @@ pub struct RunnerOpts {
 }
 
 pub struct Workspace {
+    pub output_dir: PathBuf,
     pub checkout: PathBuf,
     pub work_dir: PathBuf,
 }
@@ -55,6 +57,7 @@ pub trait LangRunner: Send + Sync {
         wasmer: &WasmerRuntime,
         id: &str,
         mode: Mode,
+        log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>>;
 }
 
@@ -63,6 +66,7 @@ pub mod tests {
     use anyhow::Result;
 
     use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+    use crate::run_log::RunLog;
     use crate::wasmer::WasmerRuntime;
 
     pub struct MockRunner;
@@ -102,6 +106,7 @@ pub mod tests {
             _wasmer: &WasmerRuntime,
             id: &str,
             _mode: Mode,
+            _log: Option<&RunLog>,
         ) -> Result<Vec<TestResult>> {
             let status = match id.split('_').next().unwrap_or("") {
                 "fail" => Status::Fail,

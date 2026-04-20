@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+use crate::run_log::RunLog;
 use crate::wasmer::{RunSpec, Stream, WasmerRuntime};
 
 const DISCOVER_AND_RUN: &str = r#"import os,sys,unittest
@@ -132,6 +133,7 @@ impl LangRunner for PythonRunner {
         wasmer: &WasmerRuntime,
         id: &str,
         mode: Mode,
+        log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
         let mut parser = PythonProtocol::default();
         let args = match mode {
@@ -155,6 +157,13 @@ impl LangRunner for PythonRunner {
             }
             Ok(())
         })?;
+        if let Some(log) = log {
+            log.append(
+                &format!("module {id}{}", if out.timed_out { " TIMEOUT" } else { "" }),
+                &out.stdout,
+                &out.stderr,
+            )?;
+        }
         Ok(match mode {
             Mode::Capture => parser.finish(out.timed_out, id),
             Mode::Debug => {

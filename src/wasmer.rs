@@ -74,7 +74,10 @@ impl WasmerRuntime {
             }
 
             comm = comm
-                .limit_time(min(deadline.saturating_duration_since(now), Duration::from_millis(250)))
+                .limit_time(min(
+                    deadline.saturating_duration_since(now),
+                    Duration::from_millis(250),
+                ))
                 .limit_size(64 * 1024);
 
             match comm.read() {

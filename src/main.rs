@@ -1,6 +1,8 @@
 mod commands;
 mod git;
 mod langs;
+mod reports;
+mod run_log;
 mod wasmer;
 
 use anyhow::Result;
