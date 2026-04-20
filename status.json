@@ -19346,7 +19346,7 @@
   "test.test_json.test_pass3.TestPyPass3.test_parse": "PASS",
   "test.test_json.test_recursion.TestCRecursion.test_defaultrecursion": "PASS",
   "test.test_json.test_recursion.TestCRecursion.test_dictrecursion": "PASS",
-  "test.test_json.test_recursion.TestCRecursion.test_endless_recursion": "FAIL",
+  "test.test_json.test_recursion.TestCRecursion.test_endless_recursion": "PASS",
   "test.test_json.test_recursion.TestCRecursion.test_highly_nested_objects_decoding": "FAIL",
   "test.test_json.test_recursion.TestCRecursion.test_highly_nested_objects_encoding": "FAIL",
   "test.test_json.test_recursion.TestCRecursion.test_listrecursion": "FAIL",
