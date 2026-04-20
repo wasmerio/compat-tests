@@ -1,9 +1,7 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 use clap::Args;
 
-#[derive(Args, Debug)]
+#[derive(Args)]
 pub struct PrCommentArgs {}
 
 pub fn pr_comment(args: PrCommentArgs) -> Result<()> {

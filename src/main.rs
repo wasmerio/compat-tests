@@ -1,4 +1,6 @@
 mod commands;
+mod langs;
+mod wasmer;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -8,7 +10,7 @@ use crate::commands::pr_comment::{PrCommentArgs, pr_comment};
 use crate::commands::publish::{PublishArgs, publish};
 use crate::commands::run::{RunArgs, run};
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(
     name = "shield",
     version,
@@ -19,7 +21,7 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 enum Command {
     /// Run the upstream test suite for a language.
     Run(RunArgs),

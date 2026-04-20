@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Error, Result};
 use clap::{Args, ValueEnum};
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum)]
 #[value(rename_all = "lowercase")]
 pub enum Lang {
     Python,
@@ -36,7 +36,7 @@ impl FromStr for WasmerSource {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Args)]
 pub struct RunArgs {
     /// Language to run.
     #[arg(long)]
