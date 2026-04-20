@@ -1,11 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use rayon::{ThreadPoolBuilder, prelude::*};
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
+use crate::commands::run::{ExecutionReport, ItemError, StatusCounts};
 use crate::run_log::RunLog;
 use crate::wasmer::{RunSpec, Stream, WasmerRuntime};
 
@@ -41,10 +45,36 @@ result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2, resultclass=Res
 raise SystemExit(0 if result.wasSuccessful() else 1)
 "#;
 
+const DISCOVER_CASES: &str = r#"import sys,unittest
+job = sys.argv[1]
+def walk(suite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from walk(item)
+        else:
+            test_id = item.id()
+            if not test_id.startswith("unittest.loader."):
+                print(test_id, flush=True)
+try:
+    suite = unittest.defaultTestLoader.loadTestsFromName(job)
+except unittest.SkipTest:
+    print(job, flush=True)
+    raise SystemExit(0)
+for _ in walk(suite):
+    pass
+"#;
+
 const GUEST_TEST_DIR_CODE: &str = "import sys; print(f'/usr/local/lib/python{sys.version_info.major}.{sys.version_info.minor}/test')";
+const RETEST_TIMEOUT: Duration = Duration::from_secs(300);
+const RETEST_RUNS: usize = 3;
 
 pub struct PythonRunner {
     guest_test_dir: OnceLock<String>,
+}
+
+pub struct CapturedModuleRun {
+    pub results: Vec<TestResult>,
+    pub timed_out: bool,
 }
 
 impl PythonRunner {
@@ -68,6 +98,279 @@ impl PythonRunner {
             Self::host_test_dir(workspace).display(),
             guest
         ))
+    }
+
+    pub fn discover_cases(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        id: &str,
+        timeout: Duration,
+    ) -> Result<Vec<String>> {
+        let out = wasmer.run(
+            RunSpec {
+                package: Self::OPTS.wasmer_package.to_string(),
+                flags: vec!["--volume".into(), self.volume_flag(workspace)?],
+                args: vec!["-c".into(), DISCOVER_CASES.into(), id.into()],
+                timeout: Some(timeout),
+            },
+            |_, _| Ok(()),
+        )?;
+        if out.timed_out {
+            return Ok(vec![id.to_string()]);
+        }
+        let mut names: Vec<String> = out
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("unittest.loader."))
+            .map(str::to_string)
+            .collect();
+        names.sort();
+        names.dedup();
+        if names.is_empty() && out.exit_code != Some(0) {
+            names.push(id.to_string());
+        }
+        Ok(names)
+    }
+
+    pub fn rerun_status(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        id: &str,
+        log: Option<&RunLog>,
+        timeout: Duration,
+    ) -> Result<String> {
+        let out = wasmer.run(
+            RunSpec {
+                package: Self::OPTS.wasmer_package.to_string(),
+                flags: vec!["--volume".into(), self.volume_flag(workspace)?],
+                args: vec!["-m".into(), "unittest".into(), "-v".into(), id.into()],
+                timeout: Some(timeout),
+            },
+            |_, _| Ok(()),
+        )?;
+        if let Some(log) = log {
+            log.append(
+                &format!("rerun {id}{}", if out.timed_out { " TIMEOUT" } else { "" }),
+                &out.stdout,
+                &out.stderr,
+            )?;
+        }
+        Ok(parse_debug_status(
+            &(out.stdout.clone() + &out.stderr),
+            out.exit_code,
+            out.timed_out,
+        ))
+    }
+
+    pub fn run_suite_capture(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        log: Option<&RunLog>,
+        timeout: Duration,
+    ) -> Result<ExecutionReport> {
+        self.prepare(workspace, wasmer)?;
+        let ids = self.discover(workspace, None)?;
+        if ids.is_empty() {
+            bail!("runner discovered 0 tests");
+        }
+
+        let workers = worker_count(ids.len());
+        println!(
+            "Discovering leaf tests in {} modules with {workers} workers...",
+            ids.len()
+        );
+        let discover_done = AtomicUsize::new(0);
+        let pool = ThreadPoolBuilder::new().num_threads(workers).build()?;
+        let discovered_outcomes: Vec<Result<(String, Vec<String>), ItemError>> =
+            pool.install(|| {
+                ids.par_iter()
+                    .map(|id| {
+                        let names = self
+                            .discover_cases(workspace, wasmer, id, timeout)
+                            .map_err(|e| ItemError {
+                                id: id.clone(),
+                                message: format!("{e:#}"),
+                            })?;
+                        let done = discover_done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if done % 25 == 0 || done == ids.len() {
+                            println!("Discovered {done}/{} modules", ids.len());
+                        }
+                        Ok((id.clone(), names))
+                    })
+                    .collect()
+            });
+
+        let mut discovered = Vec::new();
+        let mut discovery_errors = Vec::new();
+        for outcome in discovered_outcomes {
+            match outcome {
+                Ok((id, names)) if !names.is_empty() => discovered.push((id, names)),
+                Ok(_) => {}
+                Err(error) => discovery_errors.push(error),
+            }
+        }
+        if !discovery_errors.is_empty() {
+            return Ok(ExecutionReport {
+                results: vec![],
+                counts: StatusCounts(HashMap::new()),
+                errors: discovery_errors,
+            });
+        }
+
+        let total_cases = discovered
+            .iter()
+            .map(|(_, names)| names.len())
+            .sum::<usize>();
+        println!(
+            "Running {} module jobs covering {total_cases} tests with {workers} workers...",
+            discovered.len()
+        );
+        let completed_cases = AtomicUsize::new(0);
+        let mut results = Vec::new();
+        let mut errors = Vec::new();
+        let mut counts = StatusCounts(HashMap::new());
+        let run_outcomes: Vec<Result<Vec<TestResult>, ItemError>> = pool.install(|| {
+            discovered
+                .par_iter()
+                .map(|(id, expected)| {
+                    self.run_module_capture(workspace, wasmer, id, log)
+                        .map(|run| {
+                            reconcile_module_results(id, expected, run.results, run.timed_out)
+                        })
+                        .map_err(|e| ItemError {
+                            id: id.clone(),
+                            message: format!("{e:#}"),
+                        })
+                })
+                .collect()
+        });
+        for outcome in run_outcomes {
+            match outcome {
+                Ok(tests) => {
+                    for result in tests {
+                        let completed = completed_cases.fetch_add(1, Ordering::Relaxed) + 1;
+                        println!(
+                            "[{completed}/{total_cases}] {} {}",
+                            result.id,
+                            status_name(result.status)
+                        );
+                        counts.increment(result.status);
+                        results.push(result);
+                    }
+                }
+                Err(error) => errors.push(error),
+            }
+        }
+        results.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(ExecutionReport {
+            results,
+            counts,
+            errors,
+        })
+    }
+
+    pub fn stabilize_changed_tests(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        log: Option<&RunLog>,
+        baseline_status: &BTreeMap<String, String>,
+        candidate_status: BTreeMap<String, String>,
+    ) -> Result<(BTreeMap<String, String>, usize)> {
+        let changed: Vec<String> = baseline_status
+            .iter()
+            .filter(|(test, old)| candidate_status.get(*test).is_some_and(|new| new != *old))
+            .map(|(test, _)| test.clone())
+            .collect();
+        if changed.is_empty() {
+            return Ok((candidate_status, 0));
+        }
+
+        let workers = worker_count(changed.len());
+        println!(
+            "Re-running {} changed tests with {workers} workers ({RETEST_RUNS} runs each, {}s timeout)...",
+            changed.len(),
+            RETEST_TIMEOUT.as_secs()
+        );
+        let rerun_done = AtomicUsize::new(0);
+        let pool = ThreadPoolBuilder::new().num_threads(workers).build()?;
+        let reruns: Vec<Result<(String, String, bool)>> = pool.install(|| {
+            changed
+                .par_iter()
+                .map(|test_name| {
+                    let result = classify_changed_test(
+                        self,
+                        workspace,
+                        wasmer,
+                        log,
+                        test_name,
+                        baseline_status
+                            .get(test_name)
+                            .map(String::as_str)
+                            .unwrap_or("FAIL"),
+                        candidate_status
+                            .get(test_name)
+                            .map(String::as_str)
+                            .unwrap_or("FAIL"),
+                    );
+                    let done = rerun_done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if done % 10 == 0 || done == changed.len() {
+                        println!("Re-ran {done}/{} changed tests", changed.len());
+                    }
+                    result
+                })
+                .collect()
+        });
+
+        let mut effective = candidate_status;
+        let mut flaky_count = 0;
+        for rerun in reruns {
+            let (test_name, effective_status, flaky) = rerun?;
+            effective.insert(test_name, effective_status);
+            if flaky {
+                flaky_count += 1;
+            }
+        }
+        Ok((effective, flaky_count))
+    }
+
+    pub fn run_module_capture(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        id: &str,
+        log: Option<&RunLog>,
+    ) -> Result<CapturedModuleRun> {
+        let mut parser = PythonProtocol::default();
+        let out = wasmer.run(
+            RunSpec {
+                package: Self::OPTS.wasmer_package.to_string(),
+                flags: vec!["--volume".into(), self.volume_flag(workspace)?],
+                args: vec!["-c".into(), DISCOVER_AND_RUN.into(), id.into()],
+                timeout: None,
+            },
+            |stream, chunk| {
+                if matches!(stream, Stream::Stdout) {
+                    parser.feed(chunk);
+                }
+                Ok(())
+            },
+        )?;
+        if let Some(log) = log {
+            log.append(
+                &format!("module {id}{}", if out.timed_out { " TIMEOUT" } else { "" }),
+                &out.stdout,
+                &out.stderr,
+            )?;
+        }
+        Ok(CapturedModuleRun {
+            results: parser.finish(out.timed_out, id),
+            timed_out: out.timed_out,
+        })
     }
 }
 
@@ -135,38 +438,18 @@ impl LangRunner for PythonRunner {
         mode: Mode,
         log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>> {
-        let mut parser = PythonProtocol::default();
-        let args = match mode {
-            Mode::Capture => vec!["-c".into(), DISCOVER_AND_RUN.into(), id.into()],
-            Mode::Debug => vec!["-m".into(), "unittest".into(), "-v".into(), id.into()],
-        };
-        let spec = RunSpec {
-            package: Self::OPTS.wasmer_package.to_string(),
-            flags: vec!["--volume".into(), self.volume_flag(workspace)?],
-            args,
-            timeout: None,
-        };
-        let out = wasmer.run(spec, |stream, chunk| {
-            match mode {
-                Mode::Capture => {
-                    if matches!(stream, Stream::Stdout) {
-                        parser.feed(chunk);
-                    }
-                }
-                Mode::Debug => write_stream(stream, chunk)?,
-            }
-            Ok(())
-        })?;
-        if let Some(log) = log {
-            log.append(
-                &format!("module {id}{}", if out.timed_out { " TIMEOUT" } else { "" }),
-                &out.stdout,
-                &out.stderr,
-            )?;
-        }
         Ok(match mode {
-            Mode::Capture => parser.finish(out.timed_out, id),
+            Mode::Capture => self.run_module_capture(workspace, wasmer, id, log)?.results,
             Mode::Debug => {
+                let out = wasmer.run(
+                    RunSpec {
+                        package: Self::OPTS.wasmer_package.to_string(),
+                        flags: vec!["--volume".into(), self.volume_flag(workspace)?],
+                        args: vec!["-m".into(), "unittest".into(), "-v".into(), id.into()],
+                        timeout: None,
+                    },
+                    write_stream,
+                )?;
                 let status = if out.timed_out {
                     Status::Timeout
                 } else if out.exit_code == Some(0) {
@@ -212,6 +495,94 @@ fn resolve_guest_test_dir(wasmer: &WasmerRuntime) -> Result<String> {
         );
     }
     Ok(dir.to_string())
+}
+
+fn parse_debug_status(output: &str, exit_code: Option<i32>, timed_out: bool) -> String {
+    if timed_out {
+        return "TIMEOUT".to_string();
+    }
+    if output.contains("... skipped ") {
+        return "SKIP".to_string();
+    }
+    if output.lines().any(|line| line.starts_with("OK")) && exit_code == Some(0) {
+        return "PASS".to_string();
+    }
+    if output.lines().any(|line| line.starts_with("FAILED (")) || exit_code != Some(0) {
+        return "FAIL".to_string();
+    }
+    "TIMEOUT".to_string()
+}
+
+fn status_name(status: Status) -> &'static str {
+    match status {
+        Status::Pass => "PASS",
+        Status::Fail => "FAIL",
+        Status::Skip => "SKIP",
+        Status::Timeout => "TIMEOUT",
+        Status::Flaky => "FLAKY",
+    }
+}
+
+fn reconcile_module_results(
+    module_id: &str,
+    expected: &[String],
+    results: Vec<TestResult>,
+    timed_out: bool,
+) -> Vec<TestResult> {
+    let mut by_id = BTreeMap::new();
+    for result in results {
+        if result.id != module_id || expected.iter().any(|name| name == &result.id) {
+            by_id.insert(result.id, result.status);
+        }
+    }
+    let fallback = if timed_out {
+        Status::Timeout
+    } else {
+        Status::Fail
+    };
+    for name in expected {
+        by_id.entry(name.clone()).or_insert(fallback);
+    }
+    by_id
+        .into_iter()
+        .map(|(id, status)| TestResult { id, status })
+        .collect()
+}
+
+fn classify_changed_test(
+    runner: &PythonRunner,
+    workspace: &Workspace,
+    wasmer: &WasmerRuntime,
+    log: Option<&RunLog>,
+    test_name: &str,
+    old_status: &str,
+    new_status: &str,
+) -> Result<(String, String, bool)> {
+    let rerun_once = || runner.rerun_status(workspace, wasmer, test_name, log, RETEST_TIMEOUT);
+
+    if new_status != "PASS" {
+        let outcome = rerun_once()?;
+        if outcome == new_status {
+            Ok((test_name.to_string(), new_status.to_string(), false))
+        } else {
+            Ok((test_name.to_string(), old_status.to_string(), true))
+        }
+    } else {
+        for _ in 0..RETEST_RUNS {
+            if rerun_once()? != "PASS" {
+                return Ok((test_name.to_string(), old_status.to_string(), true));
+            }
+        }
+        Ok((test_name.to_string(), "PASS".to_string(), false))
+    }
+}
+
+fn worker_count(limit: usize) -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .saturating_add(2)
+        .min(limit.max(1))
 }
 
 fn patch_faulthandler_workarounds(testdir: &Path) -> Result<()> {
@@ -522,6 +893,78 @@ PASS mod.A
                 id: "test.test_foo".into(),
                 status: Status::Timeout
             }],
+        );
+    }
+
+    #[test]
+    fn debug_status_detects_skip() {
+        assert_eq!(
+            parse_debug_status("test_x ... skipped 'nope'\n", Some(0), false),
+            "SKIP"
+        );
+    }
+
+    #[test]
+    fn debug_status_detects_pass() {
+        assert_eq!(parse_debug_status("...\nOK\n", Some(0), false), "PASS");
+    }
+
+    #[test]
+    fn debug_status_detects_timeout() {
+        assert_eq!(parse_debug_status("", None, true), "TIMEOUT");
+    }
+
+    #[test]
+    fn reconcile_expands_module_fail_to_expected_cases() {
+        let results = reconcile_module_results(
+            "test.mod",
+            &["test.mod.A".into(), "test.mod.B".into()],
+            vec![TestResult {
+                id: "test.mod".into(),
+                status: Status::Fail,
+            }],
+            false,
+        );
+
+        assert_eq!(
+            results,
+            vec![
+                TestResult {
+                    id: "test.mod.A".into(),
+                    status: Status::Fail,
+                },
+                TestResult {
+                    id: "test.mod.B".into(),
+                    status: Status::Fail,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reconcile_fills_missing_expected_cases_on_timeout() {
+        let results = reconcile_module_results(
+            "test.mod",
+            &["test.mod.A".into(), "test.mod.B".into()],
+            vec![TestResult {
+                id: "test.mod.A".into(),
+                status: Status::Pass,
+            }],
+            true,
+        );
+
+        assert_eq!(
+            results,
+            vec![
+                TestResult {
+                    id: "test.mod.A".into(),
+                    status: Status::Pass,
+                },
+                TestResult {
+                    id: "test.mod.B".into(),
+                    status: Status::Timeout,
+                },
+            ]
         );
     }
 }
