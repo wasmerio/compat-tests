@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
-use crate::runtime::{RunSpec, Stream, WasmerRuntime};
+use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
 
 const DISCOVER_AND_RUN: &str = r#"import os,sys,unittest
 job = sys.argv[1]
@@ -74,7 +74,7 @@ impl PythonRunner {
         git_repo: "https://github.com/wasix-org/cpython.git",
         // TODO: I guess we could infer git_ref from the package itself
         git_ref: "e3245fc95e570ac823deb50689041bc1f81d6b27",
-        wasmer_package: "python/python",
+        wasmer_package: Some("python/python"),
         wasmer_flags: &[],
         docker_compose: None,
     };
@@ -89,11 +89,20 @@ impl PythonRunner {
         workspace.checkout.join("Lib").join("test")
     }
 
-    fn volume_flag(&self, workspace: &Workspace) -> Result<String> {
-        let guest = self
+    fn guest_test_dir(&self, wasmer: &WasmerRuntime) -> Result<&str> {
+        if self.guest_test_dir.get().is_none() {
+            let guest_dir = resolve_guest_test_dir(wasmer)?;
+            let _ = self.guest_test_dir.set(guest_dir);
+        }
+        Ok(self
             .guest_test_dir
             .get()
-            .ok_or_else(|| anyhow!("guest test dir unresolved — prepare() must run first"))?;
+            .expect("guest_test_dir should be initialized")
+            .as_str())
+    }
+
+    fn volume_flag(&self, workspace: &Workspace, wasmer: &WasmerRuntime) -> Result<String> {
+        let guest = self.guest_test_dir(wasmer)?;
         Ok(format!(
             "{}:{}",
             Self::host_test_dir(workspace).display(),
@@ -110,8 +119,13 @@ impl PythonRunner {
         let mut stdout = String::new();
         let result = wasmer.run(
             RunSpec {
-                package: Self::OPTS.wasmer_package.to_string(),
-                flags: vec!["--volume".into(), self.volume_flag(workspace)?],
+                target: RunTarget::Package(
+                    Self::OPTS
+                        .wasmer_package
+                        .expect("python package")
+                        .to_string(),
+                ),
+                flags: vec!["--volume".into(), self.volume_flag(workspace, wasmer)?],
                 args: vec!["-c".into(), DISCOVER_CASES.into(), id.into()],
                 timeout: Some(DISCOVER_TIMEOUT),
             },
@@ -157,8 +171,13 @@ impl PythonRunner {
         let mut parser = PythonProtocol::default();
         let result = wasmer.run(
             RunSpec {
-                package: Self::OPTS.wasmer_package.to_string(),
-                flags: vec!["--volume".into(), self.volume_flag(workspace)?],
+                target: RunTarget::Package(
+                    Self::OPTS
+                        .wasmer_package
+                        .expect("python package")
+                        .to_string(),
+                ),
+                flags: vec!["--volume".into(), self.volume_flag(workspace, wasmer)?],
                 args: vec!["-c".into(), DISCOVER_AND_RUN.into(), id.into()],
                 timeout: None,
             },
@@ -189,14 +208,14 @@ impl LangRunner for PythonRunner {
         &Self::OPTS
     }
 
-    fn prepare(&self, workspace: &Workspace, wasmer: &WasmerRuntime) -> Result<()> {
+    fn prepare(
+        &self,
+        workspace: &Workspace,
+        _wasmer: &WasmerRuntime,
+        _ids: &[String],
+    ) -> Result<()> {
         patch_faulthandler_workarounds(&Self::host_test_dir(workspace))
-            .context("applying cpython test patches")?;
-        let guest_dir = resolve_guest_test_dir(wasmer)?;
-        self.guest_test_dir
-            .set(guest_dir)
-            .map_err(|existing| anyhow!("guest_test_dir already set to {existing:?}"))?;
-        Ok(())
+            .context("applying cpython test patches")
     }
 
     fn discover(
@@ -253,8 +272,13 @@ impl LangRunner for PythonRunner {
             Mode::Debug => {
                 let result = wasmer.run(
                     RunSpec {
-                        package: Self::OPTS.wasmer_package.to_string(),
-                        flags: vec!["--volume".into(), self.volume_flag(workspace)?],
+                        target: RunTarget::Package(
+                            Self::OPTS
+                                .wasmer_package
+                                .expect("python package")
+                                .to_string(),
+                        ),
+                        flags: vec!["--volume".into(), self.volume_flag(workspace, wasmer)?],
                         args: vec!["-m".into(), "unittest".into(), "-v".into(), id.into()],
                         timeout: None,
                     },
@@ -289,7 +313,12 @@ fn resolve_guest_test_dir(wasmer: &WasmerRuntime) -> Result<String> {
     let mut stderr = String::new();
     let result = wasmer.run(
         RunSpec {
-            package: PythonRunner::OPTS.wasmer_package.to_string(),
+            target: RunTarget::Package(
+                PythonRunner::OPTS
+                    .wasmer_package
+                    .expect("python package")
+                    .to_string(),
+            ),
             flags: vec![],
             args: vec!["-c".into(), GUEST_TEST_DIR_CODE.into()],
             timeout: None,

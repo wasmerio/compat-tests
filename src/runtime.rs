@@ -37,10 +37,15 @@ pub struct ResolvedRuntime {
 }
 
 pub struct RunSpec {
-    pub package: String,
+    pub target: RunTarget,
     pub flags: Vec<String>,
     pub args: Vec<String>,
     pub timeout: Option<Duration>,
+}
+
+pub enum RunTarget {
+    Package(String),
+    File(PathBuf),
 }
 
 #[derive(Deserialize)]
@@ -140,14 +145,20 @@ impl WasmerRuntime {
         F: FnMut(Stream, &str) -> Result<()>,
     {
         let timeout = spec.timeout.unwrap_or(self.default_timeout);
-        let mut args: Vec<OsString> = vec![
-            "run".into(),
-            "--registry".into(),
-            WASMER_REGISTRY.into(),
-            "--net".into(),
-        ];
-        args.extend(spec.flags.iter().map(OsString::from));
-        args.push((&spec.package).into());
+        let mut args: Vec<OsString> = vec!["run".into()];
+        match &spec.target {
+            RunTarget::Package(package) => {
+                args.push("--registry".into());
+                args.push(WASMER_REGISTRY.into());
+                args.push("--net".into());
+                args.extend(spec.flags.iter().map(OsString::from));
+                args.push(package.into());
+            }
+            RunTarget::File(path) => {
+                args.extend(spec.flags.iter().map(OsString::from));
+                args.push(path.into());
+            }
+        }
         if !spec.args.is_empty() {
             args.push("--".into());
             args.extend(spec.args.iter().map(OsString::from));
@@ -170,13 +181,41 @@ impl WasmerRuntime {
         &self.binary
     }
 
-    pub fn compile(&self, package: &str, flags: &[String]) -> std::result::Result<(), ProcessError> {
+    pub fn compile_package(
+        &self,
+        package: &str,
+        flags: &[String],
+    ) -> std::result::Result<(), ProcessError> {
         self.run(
             RunSpec {
-                package: package.to_string(),
+                target: RunTarget::Package(package.to_string()),
                 flags: flags.to_vec(),
                 args: Vec::new(),
                 timeout: None,
+            },
+            ignore_stream,
+        )
+    }
+
+    pub fn compile_file(
+        &self,
+        wasm: &Path,
+        output: &Path,
+    ) -> std::result::Result<(), ProcessError> {
+        run_process(
+            ProcessSpec {
+                program: self.binary.clone(),
+                args: vec![
+                    "compile".into(),
+                    "-o".into(),
+                    output.as_os_str().to_os_string(),
+                    wasm.as_os_str().to_os_string(),
+                ],
+                env: vec![("RUST_BACKTRACE".into(), "1".into())],
+                cwd: std::env::current_dir()
+                    .map_err(|e| ProcessError::Spawn(format!("resolve cwd: {e}")))?,
+                timeout: self.default_timeout,
+                log_output: self.process_log.clone(),
             },
             ignore_stream,
         )

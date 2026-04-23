@@ -133,21 +133,23 @@ fn run_with_runner(
         log.clear()?;
     }
 
-    tracing::info!(
-        runner = opts.name,
-        package = opts.wasmer_package,
-        "compiling language runtime package"
-    );
-    wasmer
-        .compile(
-            opts.wasmer_package,
-            &opts
-                .wasmer_flags
-                .iter()
-                .map(|flag| (*flag).to_string())
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| anyhow::anyhow!("compile failed: {e:?}"))?;
+    if let Some(package) = opts.wasmer_package {
+        tracing::info!(
+            runner = opts.name,
+            package,
+            "compiling language runtime package"
+        );
+        wasmer
+            .compile_package(
+                package,
+                &opts
+                    .wasmer_flags
+                    .iter()
+                    .map(|flag| (*flag).to_string())
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(|e| anyhow::anyhow!("compile failed: {e:?}"))?;
+    }
 
     let report = execute_tests(
         runner,
@@ -284,7 +286,6 @@ fn execute_tests(
     filter: Option<&str>,
     mode: Mode,
 ) -> Result<ExecutionReport> {
-    runner.prepare(workspace, wasmer)?;
     let ids = runner.discover(workspace, wasmer, filter)?;
     if ids.is_empty() {
         match filter {
@@ -292,6 +293,7 @@ fn execute_tests(
             None => bail!("runner discovered 0 tests"),
         }
     }
+    runner.prepare(workspace, wasmer, &ids)?;
     let run_one = |id: &String| -> Result<Vec<TestResult>, ItemError> {
         if matches!(mode, Mode::Debug) {
             println!("\n=== {id} ===");
@@ -358,6 +360,7 @@ fn results_by_id(results: &[TestResult]) -> BTreeMap<String, Status> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::ensure_checkout;
     use crate::langs::tests::MockRunner;
     use crate::runtime::RuntimeSource;
     use tempdir::TempDir;
@@ -486,7 +489,7 @@ mod tests {
         let report = run_with_runner(
             RunArgs {
                 lang: Lang::Node,
-                filter: Some("parallel/test-assert.js".into()),
+                filter: Some("parallel/test-global.js".into()),
                 wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30),
@@ -500,12 +503,86 @@ mod tests {
             report,
             ExecutionReport {
                 results: vec![TestResult {
-                    id: "parallel/test-assert.js".into(),
+                    id: "parallel/test-global.js".into(),
                     status: Status::Pass,
                 }],
                 counts: StatusCounts(HashMap::from([(Status::Pass, 1)])),
                 errors: vec![],
             }
         );
+    }
+
+    #[test]
+    fn run_rust_debug() {
+        let report = run_with_runner(
+            RunArgs {
+                lang: Lang::Rust,
+                filter: Some(
+                    "library::alloctests::alloctests-47068aef54e24049::vec::test_append".into(),
+                ),
+                wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_ref: None,
+                timeout: Duration::from_secs(30000),
+                compare_ref: "origin/main".into(),
+            },
+            "1970-01-01T00:00:00Z",
+            &RustRunner,
+        )
+        .expect("run");
+        assert_eq!(
+            report,
+            ExecutionReport {
+                results: vec![TestResult {
+                    id: "library::alloctests::alloctests-47068aef54e24049::vec::test_append".into(),
+                    status: Status::Pass,
+                }],
+                counts: StatusCounts(HashMap::from([(Status::Pass, 1)])),
+                errors: vec![],
+            }
+        );
+    }
+
+    #[test]
+    #[ignore = "local setup helper; run with WASMER_BINARY=/path/to/wasmer cargo test test_dependencies --ignored"]
+    fn test_dependencies() {
+        let output_dir = std::env::current_dir().expect("cwd");
+        let work_root = output_dir.join(".work");
+        let wasmer_binary = std::env::var("WASMER_BINARY")
+            .expect("WASMER_BINARY must be set, ex: WASMER_BINARY=~/my/wasmer cargo test test_dependencies --ignored");
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary(wasmer_binary.into()),
+            &work_root,
+            Duration::from_secs(1800),
+            Arc::new(RunLog::new(output_dir.join("test_dependencies.log"))),
+        )
+        .expect("resolve")
+        .runtime;
+
+        let python = PythonRunner::new();
+        let node = NodeRunner;
+        let php = PhpRunner;
+        let rust = RustRunner;
+        for runner in [
+            &python as &dyn LangRunner,
+            &node as &dyn LangRunner,
+            &php as &dyn LangRunner,
+            &rust as &dyn LangRunner,
+        ] {
+            let opts = runner.opts();
+            ensure_checkout(&work_root.join(opts.name), opts.git_repo, opts.git_ref)
+                .expect("checkout");
+            if let Some(package) = opts.wasmer_package {
+                wasmer
+                    .compile_package(
+                        package,
+                        &opts
+                            .wasmer_flags
+                            .iter()
+                            .map(|flag| (*flag).to_string())
+                            .collect::<Vec<_>>(),
+                    )
+                    .expect("compile");
+            }
+        }
     }
 }

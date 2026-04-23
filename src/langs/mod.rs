@@ -20,7 +20,7 @@ pub struct RunnerOpts {
     /// Upstream git ref, ex: main
     pub git_ref: &'static str,
     /// Wasmer package name, ex: python/python
-    pub wasmer_package: &'static str,
+    pub wasmer_package: Option<&'static str>,
     /// Wasmer flags, ex: --experimental-napi
     pub wasmer_flags: &'static [&'static str],
     /// Optional docker compose file, ex: docker-compose.yml
@@ -70,7 +70,12 @@ pub enum Mode {
 
 pub trait LangRunner: Send + Sync {
     fn opts(&self) -> &'static RunnerOpts;
-    fn prepare(&self, _workspace: &Workspace, _wasmer: &WasmerRuntime) -> Result<()> {
+    fn prepare(
+        &self,
+        _workspace: &Workspace,
+        _wasmer: &WasmerRuntime,
+        _ids: &[String],
+    ) -> Result<()> {
         Ok(())
     }
     fn discover(
@@ -104,7 +109,7 @@ pub mod tests {
             name: "mock",
             git_repo: "https://example.invalid/mock.git",
             git_ref: "HEAD",
-            wasmer_package: "mock/mock",
+            wasmer_package: Some("mock/mock"),
             wasmer_flags: &[],
             docker_compose: None,
         };
@@ -113,10 +118,6 @@ pub mod tests {
     impl LangRunner for MockRunner {
         fn opts(&self) -> &'static RunnerOpts {
             &Self::OPTS
-        }
-
-        fn prepare(&self, _workspace: &Workspace, _wasmer: &WasmerRuntime) -> Result<()> {
-            Ok(())
         }
 
         fn discover(

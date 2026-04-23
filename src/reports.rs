@@ -32,7 +32,10 @@ pub fn finalize_run(
         bail!("upstream run did not produce any test statuses");
     }
 
-    write_json(&workspace.output_dir.join(status_filename(runner_name)), &status)?;
+    write_json(
+        &workspace.output_dir.join(status_filename(runner_name)),
+        &status,
+    )?;
 
     let mut counts = counts_from_status(&status);
     counts.insert("FLAKY".to_string(), flaky_count);

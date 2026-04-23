@@ -39,7 +39,7 @@ impl NodeRunner {
         name: "node",
         git_repo: "https://github.com/nodejs/node.git",
         git_ref: "v24.13.1",
-        wasmer_package: "wasmer/edgejs",
+        wasmer_package: Some("wasmer/edgejs"),
         wasmer_flags: &["--experimental-napi"],
         docker_compose: None,
     };
@@ -58,7 +58,7 @@ impl NodeRunner {
             &path,
             wasmer,
             workspace,
-            Self::OPTS.wasmer_package,
+            Self::OPTS.wasmer_package.expect("node package"),
             Self::OPTS.wasmer_flags,
         )?;
         Ok(path)
@@ -142,7 +142,11 @@ impl LangRunner for NodeRunner {
         }
 
         let mut tests = BTreeSet::new();
-        collect_node_tests(&Self::test_dir(workspace), &Self::test_dir(workspace), &mut tests)?;
+        collect_node_tests(
+            &Self::test_dir(workspace),
+            &Self::test_dir(workspace),
+            &mut tests,
+        )?;
         let tests: Vec<String> = tests.into_iter().collect();
         Ok(match filter {
             None => tests,
@@ -171,10 +175,7 @@ fn collect_node_tests(root: &Path, dir: &Path, tests: &mut BTreeSet<String>) -> 
         let rel = path
             .strip_prefix(root)
             .map_err(|e| anyhow!("strip prefix {}: {e}", path.display()))?;
-        let parts: Vec<&str> = rel
-            .iter()
-            .filter_map(|part| part.to_str())
-            .collect();
+        let parts: Vec<&str> = rel.iter().filter_map(|part| part.to_str()).collect();
         if path.is_dir() {
             if let Some(top) = parts.first() {
                 if SKIP_TOP_LEVEL_DIRS.contains(top) {
@@ -187,7 +188,11 @@ fn collect_node_tests(root: &Path, dir: &Path, tests: &mut BTreeSet<String>) -> 
             collect_node_tests(root, &path, tests)?;
             continue;
         }
-        if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with('.')) {
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with('.'))
+        {
             continue;
         }
         if !path
@@ -197,7 +202,10 @@ fn collect_node_tests(root: &Path, dir: &Path, tests: &mut BTreeSet<String>) -> 
         {
             continue;
         }
-        if parts.iter().any(|part| SKIP_PATH_PARTS.contains(part) || *part == "node_modules") {
+        if parts
+            .iter()
+            .any(|part| SKIP_PATH_PARTS.contains(part) || *part == "node_modules")
+        {
             continue;
         }
         if parts.first() == Some(&"sqlite") && parts.len() == 2 {

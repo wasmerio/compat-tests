@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow, bail};
 use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
-use crate::runtime::{RunSpec, WasmerRuntime};
+use crate::runtime::{RunSpec, RunTarget, WasmerRuntime};
 
 const GUEST_PHP_BIN: &str = "/bin/php";
 
@@ -18,7 +18,7 @@ impl PhpRunner {
         name: "php",
         git_repo: "https://github.com/wasix-org/php.git",
         git_ref: "6dd6dd1c7e409b8e9dcba8a8d6f9b7b5f944cc9e",
-        wasmer_package: "php/php-32",
+        wasmer_package: Some("php/php-32"),
         wasmer_flags: &[],
         docker_compose: None,
     };
@@ -90,7 +90,9 @@ impl PhpRunner {
 
         let result = wasmer.run(
             RunSpec {
-                package: Self::OPTS.wasmer_package.to_string(),
+                target: RunTarget::Package(
+                    Self::OPTS.wasmer_package.expect("php package").to_string(),
+                ),
                 flags: Self::volume_flags(workspace),
                 args: vec![
                     "-d".into(),
@@ -137,7 +139,12 @@ impl LangRunner for PhpRunner {
         &Self::OPTS
     }
 
-    fn prepare(&self, workspace: &Workspace, _wasmer: &WasmerRuntime) -> Result<()> {
+    fn prepare(
+        &self,
+        workspace: &Workspace,
+        _wasmer: &WasmerRuntime,
+        _ids: &[String],
+    ) -> Result<()> {
         patch_php_runtests_worker_putenv(&workspace.checkout)?;
         patch_php_runtests_guest_exec(&workspace.checkout)
     }
