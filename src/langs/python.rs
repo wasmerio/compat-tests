@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -7,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestResult, Workspace};
-use crate::process::ProcessError;
+use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, Stream, WasmerRuntime};
 
@@ -73,6 +72,7 @@ impl PythonRunner {
     pub const OPTS: RunnerOpts = RunnerOpts {
         name: "python",
         git_repo: "https://github.com/wasix-org/cpython.git",
+        // TODO: I guess we could infer git_ref from the package itself
         git_ref: "e3245fc95e570ac823deb50689041bc1f81d6b27",
         wasmer_package: "python/python",
         wasmer_package_warmup_args: &["-c", "print('ok')"],
@@ -512,22 +512,6 @@ impl PythonProtocol {
             self.statuses.insert(rest.trim().to_string(), Status::Skip);
         }
     }
-}
-
-fn write_stream(stream: Stream, line: &str) -> Result<()> {
-    match stream {
-        Stream::Stdout => {
-            let mut out = std::io::stdout().lock();
-            writeln!(out, "{line}")?;
-            out.flush()?;
-        }
-        Stream::Stderr => {
-            let mut err = std::io::stderr().lock();
-            writeln!(err, "{line}")?;
-            err.flush()?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

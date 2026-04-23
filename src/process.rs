@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -194,7 +194,7 @@ fn handle_line<F>(
 where
     F: FnMut(Stream, &str) -> Result<()>,
 {
-    if line.contains("panicked at") {
+    if state.panic_capture.is_none() && starts_rust_panic_capture(&line) {
         state.panic_capture = Some(String::new());
     }
     if let Some(capture) = &mut state.panic_capture {
@@ -207,6 +207,16 @@ where
     on_line(stream, &line)
         .map_err(|e| ProcessError::AbnormalExit(format!("line handler failed: {e:#}")))?;
     Ok(())
+}
+
+fn starts_rust_panic_capture(line: &str) -> bool {
+    // TODO: Not super bulletproof way to detect panics, maybe there is a better way?
+    line.contains("panicked at")
+        || line.contains("has overflowed its stack")
+        || line.contains("fatal runtime error:")
+        || line.contains("thread caused non-unwinding panic")
+        || line.contains("memory allocation of ")
+        || line.contains("thread panicked while processing panic")
 }
 
 fn spawn_reader<R: std::io::Read + Send + 'static>(
@@ -264,6 +274,26 @@ pub fn command_exists(name: &str) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+pub fn write_stream(stream: Stream, line: &str) -> Result<()> {
+    match stream {
+        Stream::Stdout => {
+            let mut out = std::io::stdout().lock();
+            writeln!(out, "{line}")?;
+            out.flush()?;
+        }
+        Stream::Stderr => {
+            let mut err = std::io::stderr().lock();
+            writeln!(err, "{line}")?;
+            err.flush()?;
+        }
+    }
+    Ok(())
+}
+
+pub fn ignore_stream(_: Stream, _: &str) -> Result<()> {
+    Ok(())
 }
 
 fn stream_name(stream: Stream) -> &'static str {

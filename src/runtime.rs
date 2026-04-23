@@ -16,6 +16,7 @@ use crate::reports::WasmerIdentity;
 use crate::run_log::RunLog;
 
 const WASMER_REPO: &str = "https://github.com/wasmerio/wasmer.git";
+pub const WASMER_REGISTRY: &str = "wasmer.io";
 
 pub struct WasmerRuntime {
     binary: PathBuf,
@@ -137,7 +138,12 @@ impl WasmerRuntime {
         F: FnMut(Stream, &str) -> Result<()>,
     {
         let timeout = spec.timeout.unwrap_or(self.default_timeout);
-        let mut args: Vec<OsString> = vec!["run".into(), "--net".into()];
+        let mut args: Vec<OsString> = vec![
+            "run".into(),
+            "--registry".into(),
+            WASMER_REGISTRY.into(),
+            "--net".into(),
+        ];
         args.extend(spec.flags.iter().map(OsString::from));
         args.push((&spec.package).into());
         if !spec.args.is_empty() {

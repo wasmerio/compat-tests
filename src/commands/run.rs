@@ -13,6 +13,7 @@ use crate::langs::php::PhpRunner;
 use crate::langs::python::PythonRunner;
 use crate::langs::rust::RustRunner;
 use crate::langs::{LangRunner, Mode, Status, TestResult, Workspace};
+use crate::process::ignore_stream;
 use crate::reports::{finalize_run, load_baseline_status};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RuntimeSource, WasmerRuntime};
@@ -150,7 +151,7 @@ fn run_with_runner(
                     .collect(),
                 timeout: Some(args.timeout),
             },
-            |_, _| Ok(()),
+            ignore_stream,
         )
         .map_err(|e| anyhow::anyhow!("warmup failed: {e:?}"))?;
 
@@ -450,6 +451,34 @@ mod tests {
                 results: vec![TestResult {
                     id: "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later"
                         .into(),
+                    status: Status::Pass,
+                }],
+                counts: StatusCounts(HashMap::from([(Status::Pass, 1)])),
+                errors: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn run_php_debug() {
+        let report = run_with_runner(
+            RunArgs {
+                lang: Lang::Php,
+                filter: Some("tests/basic/001.phpt".into()),
+                wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_ref: None,
+                timeout: Duration::from_secs(30),
+                compare_ref: "origin/main".into(),
+            },
+            "1970-01-01T00:00:00Z",
+            &PhpRunner,
+        )
+        .expect("run");
+        assert_eq!(
+            report,
+            ExecutionReport {
+                results: vec![TestResult {
+                    id: "tests/basic/001.phpt".into(),
                     status: Status::Pass,
                 }],
                 counts: StatusCounts(HashMap::from([(Status::Pass, 1)])),
