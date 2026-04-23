@@ -6,16 +6,27 @@ use crate::runtime::WasmerRuntime;
 
 pub struct PhpRunner;
 
-impl LangRunner for PhpRunner {
-    const OPTS: RunnerOpts = RunnerOpts {
+impl PhpRunner {
+    pub const OPTS: RunnerOpts = RunnerOpts {
         name: "php",
         git_repo: "TODO",
         git_ref: "TODO",
         wasmer_package: "php/php",
         docker_compose: None,
     };
+}
 
-    fn discover(&self, _workspace: &Workspace, _filter: Option<&str>) -> Result<Vec<String>> {
+impl LangRunner for PhpRunner {
+    fn opts(&self) -> &'static RunnerOpts {
+        &Self::OPTS
+    }
+
+    fn discover(
+        &self,
+        _workspace: &Workspace,
+        _wasmer: &WasmerRuntime,
+        _filter: Option<&str>,
+    ) -> Result<Vec<String>> {
         unimplemented!()
     }
 

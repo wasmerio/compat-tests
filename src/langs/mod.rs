@@ -3,9 +3,11 @@ pub mod php;
 pub mod python;
 pub mod rust;
 
+use std::fmt;
 use std::path::PathBuf;
 
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
@@ -24,13 +26,27 @@ pub struct Workspace {
     pub work_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Status {
     Pass,
     Fail,
     Skip,
     Timeout,
     Flaky,
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            Status::Pass => "PASS",
+            Status::Fail => "FAIL",
+            Status::Skip => "SKIP",
+            Status::Timeout => "TIMEOUT",
+            Status::Flaky => "FLAKY",
+        };
+        f.write_str(name)
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -46,11 +62,16 @@ pub enum Mode {
 }
 
 pub trait LangRunner: Send + Sync {
-    const OPTS: RunnerOpts;
+    fn opts(&self) -> &'static RunnerOpts;
     fn prepare(&self, _workspace: &Workspace, _wasmer: &WasmerRuntime) -> Result<()> {
         Ok(())
     }
-    fn discover(&self, workspace: &Workspace, filter: Option<&str>) -> Result<Vec<String>>;
+    fn discover(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        filter: Option<&str>,
+    ) -> Result<Vec<String>>;
     fn run_test(
         &self,
         workspace: &Workspace,
@@ -71,20 +92,31 @@ pub mod tests {
 
     pub struct MockRunner;
 
-    impl LangRunner for MockRunner {
-        const OPTS: RunnerOpts = RunnerOpts {
+    impl MockRunner {
+        pub const OPTS: RunnerOpts = RunnerOpts {
             name: "mock",
             git_repo: "https://example.invalid/mock.git",
             git_ref: "HEAD",
             wasmer_package: "mock/mock",
             docker_compose: None,
         };
+    }
+
+    impl LangRunner for MockRunner {
+        fn opts(&self) -> &'static RunnerOpts {
+            &Self::OPTS
+        }
 
         fn prepare(&self, _workspace: &Workspace, _wasmer: &WasmerRuntime) -> Result<()> {
             Ok(())
         }
 
-        fn discover(&self, _workspace: &Workspace, filter: Option<&str>) -> Result<Vec<String>> {
+        fn discover(
+            &self,
+            _workspace: &Workspace,
+            _wasmer: &WasmerRuntime,
+            filter: Option<&str>,
+        ) -> Result<Vec<String>> {
             let all = [
                 "pass_a",
                 "pass_b",

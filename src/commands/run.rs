@@ -8,13 +8,17 @@ use clap::{Args, ValueEnum};
 use rayon::prelude::*;
 
 use crate::git::{ensure_checkout, file_json};
+use crate::langs::node::NodeRunner;
+use crate::langs::php::PhpRunner;
 use crate::langs::python::PythonRunner;
+use crate::langs::rust::RustRunner;
 use crate::langs::{LangRunner, Mode, Status, TestResult, Workspace};
-use crate::reports::{ReportContext, finalize_debug_run, finalize_run};
+use crate::reports::{finalize_debug_run, finalize_run};
 use crate::run_log::RunLog;
 use crate::runtime::{RuntimeSource, WasmerRuntime};
 
-const MIN_CAPTURE_TIMEOUT: Duration = Duration::from_secs(2);
+const RETEST_TIMEOUT: Duration = Duration::from_secs(300);
+const RETEST_RUNS: usize = 3;
 
 #[derive(Debug, Clone, ValueEnum)]
 #[value(rename_all = "lowercase")]
@@ -27,20 +31,27 @@ pub enum Lang {
 
 #[derive(Args)]
 pub struct RunArgs {
+    /// Upstream language suite to run.
     #[arg(long)]
     pub lang: Lang,
 
+    /// Optional test or module filter for a debug run.
     pub filter: Option<String>,
 
+    /// Path to existing Wasmer binary to use for testing.
     #[arg(long, conflicts_with = "wasmer_ref")]
     pub wasmer: Option<PathBuf>,
 
+    /// Wasmer git ref to download/build when `--wasmer` is not supplied.
     #[arg(long)]
     pub wasmer_ref: Option<String>,
 
+    /// Per-process timeout used for Wasmer invocations. It is NOT a timeout per unit
+    /// test as often tests runs in modules which may contain many unit tests inside
     #[arg(long, value_parser = humantime::parse_duration, default_value = "10m")]
     pub timeout: Duration,
 
+    /// Git ref used to load baseline `status.json` for stabilization/comparison.
     #[arg(long, default_value = "origin/main")]
     pub compare_ref: String,
 }
@@ -69,15 +80,16 @@ impl StatusCounts {
 
 pub fn run(args: RunArgs) -> Result<()> {
     let started_at = now_utc();
-    if !matches!(args.lang, Lang::Python) {
-        bail!(
-            "runner for {:?} not yet implemented — only python works today",
-            args.lang
-        );
+    match args.lang {
+        Lang::Python => run_with_runner(args, &started_at, &PythonRunner::new()),
+        Lang::Node => run_with_runner(args, &started_at, &NodeRunner),
+        Lang::Php => run_with_runner(args, &started_at, &PhpRunner),
+        Lang::Rust => run_with_runner(args, &started_at, &RustRunner),
     }
+}
 
-    let runner = PythonRunner::new();
-    let opts = PythonRunner::OPTS;
+fn run_with_runner(args: RunArgs, started_at: &str, runner: &dyn LangRunner) -> Result<()> {
+    let opts = runner.opts();
     let output_dir = std::env::current_dir()?;
     let work_root = output_dir.join(".work");
     let work_dir = work_root.join(opts.name);
@@ -92,7 +104,9 @@ pub fn run(args: RunArgs) -> Result<()> {
     } else {
         Mode::Capture
     };
-    let process_log = Arc::new(RunLog::new(workspace.output_dir.join("test.log")));
+    let process_log = Arc::new(RunLog::new(
+        workspace.output_dir.join(format!("test_{}.log", opts.name)),
+    ));
     let resolved_wasmer = WasmerRuntime::resolve(
         if let Some(path) = &args.wasmer {
             RuntimeSource::LocalBinary(path.clone())
@@ -104,11 +118,7 @@ pub fn run(args: RunArgs) -> Result<()> {
             )
         },
         &work_root,
-        if matches!(mode, Mode::Capture) {
-            args.timeout.max(MIN_CAPTURE_TIMEOUT)
-        } else {
-            args.timeout
-        },
+        args.timeout,
         process_log.clone(),
     )?;
     let wasmer = resolved_wasmer.runtime;
@@ -120,7 +130,7 @@ pub fn run(args: RunArgs) -> Result<()> {
 
     if matches!(mode, Mode::Debug) {
         let report = execute_tests(
-            &runner,
+            runner,
             &workspace,
             &wasmer,
             None,
@@ -131,30 +141,19 @@ pub fn run(args: RunArgs) -> Result<()> {
         return Ok(());
     }
 
-    let report = runner.run_suite_capture(
+    let report = execute_tests(
+        runner,
         &workspace,
         &wasmer,
         log.as_deref(),
-        args.timeout.max(MIN_CAPTURE_TIMEOUT),
+        None,
+        Mode::Capture,
     )?;
-    if !report.errors.is_empty() {
-        let message = report
-            .errors
-            .iter()
-            .map(|e| format!("{}: {}", e.id, e.message))
-            .collect::<Vec<_>>()
-            .join("\n");
-        bail!("{message}");
-    }
 
-    let status = results_to_status(&report.results);
-    if status.is_empty() {
-        bail!("upstream run did not produce any test statuses");
-    }
-
+    let status = results_by_id(&report.results);
     let baseline_status =
         if workspace.output_dir.join(".git").exists() && !args.compare_ref.is_empty() {
-            file_json::<BTreeMap<String, String>>(
+            file_json::<BTreeMap<String, Status>>(
                 &workspace.output_dir,
                 &args.compare_ref,
                 "status.json",
@@ -163,7 +162,8 @@ pub fn run(args: RunArgs) -> Result<()> {
         } else {
             BTreeMap::new()
         };
-    let (status, flaky_count) = runner.stabilize_changed_tests(
+    let (status, flaky_count) = stabilize_changed_tests(
+        runner,
         &workspace,
         &wasmer,
         log.as_deref(),
@@ -176,23 +176,105 @@ pub fn run(args: RunArgs) -> Result<()> {
         &resolved_wasmer.identity,
         args.timeout,
         args.filter.as_deref(),
-        ReportContext {
-            runner_name: opts.name,
-            runner_commit_key: "cpython_commit",
-            runner_commit: opts.git_ref,
-        },
-        &started_at,
+        opts.name,
+        opts.git_ref,
+        started_at,
         status,
         flaky_count,
+        &report.errors,
     )
+}
+
+fn stabilize_changed_tests(
+    runner: &dyn LangRunner,
+    workspace: &Workspace,
+    wasmer: &WasmerRuntime,
+    log: Option<&RunLog>,
+    baseline_status: &BTreeMap<String, Status>,
+    candidate_status: BTreeMap<String, Status>,
+) -> Result<(BTreeMap<String, Status>, usize)> {
+    let changed: Vec<String> = baseline_status
+        .iter()
+        .filter(|(test, old)| candidate_status.get(*test).is_some_and(|new| new != *old))
+        .map(|(test, _)| test.clone())
+        .collect();
+    if changed.is_empty() {
+        return Ok((candidate_status, 0));
+    }
+
+    tracing::info!(
+        changed = changed.len(),
+        reruns = RETEST_RUNS,
+        timeout_seconds = RETEST_TIMEOUT.as_secs(),
+        "stabilizing changed tests"
+    );
+    let reruns: Vec<Result<(String, Status, bool)>> = changed
+        .par_iter()
+        .map(|test_name| {
+            classify_changed_test(
+                runner,
+                workspace,
+                wasmer,
+                log,
+                test_name,
+                baseline_status
+                    .get(test_name)
+                    .copied()
+                    .unwrap_or(Status::Fail),
+                candidate_status
+                    .get(test_name)
+                    .copied()
+                    .unwrap_or(Status::Fail),
+            )
+        })
+        .collect();
+
+    let mut effective = candidate_status;
+    let mut flaky_count = 0;
+    for rerun in reruns {
+        let (test_name, effective_status, flaky) = rerun?;
+        effective.insert(test_name, effective_status);
+        if flaky {
+            flaky_count += 1;
+        }
+    }
+    Ok((effective, flaky_count))
+}
+
+fn classify_changed_test(
+    runner: &dyn LangRunner,
+    workspace: &Workspace,
+    wasmer: &WasmerRuntime,
+    log: Option<&RunLog>,
+    test_name: &str,
+    old_status: Status,
+    new_status: Status,
+) -> Result<(String, Status, bool)> {
+    let rerun_once = || rerun_status(runner, workspace, wasmer, test_name, log);
+
+    if new_status != Status::Pass {
+        let outcome = rerun_once()?;
+        if outcome == new_status {
+            Ok((test_name.to_string(), new_status, false))
+        } else {
+            Ok((test_name.to_string(), old_status, true))
+        }
+    } else {
+        for _ in 0..RETEST_RUNS {
+            if rerun_once()? != Status::Pass {
+                return Ok((test_name.to_string(), old_status, true));
+            }
+        }
+        Ok((test_name.to_string(), Status::Pass, false))
+    }
 }
 
 fn now_utc() -> String {
     humantime::format_rfc3339_seconds(SystemTime::now()).to_string()
 }
 
-pub fn execute_tests<R: LangRunner>(
-    runner: &R,
+fn execute_tests(
+    runner: &dyn LangRunner,
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
     log: Option<&RunLog>,
@@ -200,7 +282,7 @@ pub fn execute_tests<R: LangRunner>(
     mode: Mode,
 ) -> Result<ExecutionReport> {
     runner.prepare(workspace, wasmer)?;
-    let ids = runner.discover(workspace, filter)?;
+    let ids = runner.discover(workspace, wasmer, filter)?;
     if ids.is_empty() {
         match filter {
             Some(f) => bail!("no tests matched filter {f:?}"),
@@ -243,22 +325,31 @@ pub fn execute_tests<R: LangRunner>(
     })
 }
 
-fn results_to_status(results: &[TestResult]) -> BTreeMap<String, String> {
-    let mut status = BTreeMap::new();
-    for result in results {
-        status.insert(result.id.clone(), status_name(result.status).to_string());
+fn rerun_status(
+    runner: &dyn LangRunner,
+    workspace: &Workspace,
+    wasmer: &WasmerRuntime,
+    id: &str,
+    log: Option<&RunLog>,
+) -> Result<Status> {
+    let tests = runner.run_test(workspace, wasmer, id, Mode::Debug, log)?;
+    if tests.len() != 1 {
+        bail!("debug rerun for {id} produced {} results", tests.len());
     }
-    status
+    Ok(match tests.into_iter().next().unwrap().status {
+        Status::Pass => Status::Pass,
+        Status::Fail => Status::Fail,
+        Status::Skip => Status::Skip,
+        Status::Timeout => Status::Timeout,
+        Status::Flaky => bail!("debug rerun for {id} returned FLAKY"),
+    })
 }
 
-fn status_name(status: Status) -> &'static str {
-    match status {
-        Status::Pass => "PASS",
-        Status::Fail => "FAIL",
-        Status::Skip => "SKIP",
-        Status::Timeout => "TIMEOUT",
-        Status::Flaky => "FLAKY",
-    }
+fn results_by_id(results: &[TestResult]) -> BTreeMap<String, Status> {
+    results
+        .iter()
+        .map(|result| (result.id.clone(), result.status))
+        .collect()
 }
 
 #[cfg(test)]
@@ -276,9 +367,8 @@ mod tests {
             work_dir: PathBuf::new(),
         };
         let dir = TempDir::new("shield-run").expect("tempdir");
-        let binary = find_binary_in_path("wasmer").expect("wasmer in PATH");
         let wasmer = WasmerRuntime::resolve(
-            RuntimeSource::LocalBinary(binary),
+            RuntimeSource::LocalBinary("wasmer".into()),
             dir.path(),
             Duration::ZERO,
             Arc::new(RunLog::new(dir.path().join("process.log"))),
@@ -327,13 +417,5 @@ mod tests {
                 errors: vec![],
             }
         );
-    }
-
-    fn find_binary_in_path(name: &str) -> Option<PathBuf> {
-        std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths)
-                .map(|dir| dir.join(name))
-                .find(|path| path.is_file())
-        })
     }
 }

@@ -6,19 +6,13 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::json;
 
-use crate::commands::run::ExecutionReport;
+use crate::commands::run::{ExecutionReport, ItemError};
 use crate::langs::{Status, Workspace};
 
 pub struct WasmerIdentity {
     pub git_ref: String,
     pub branch: String,
     pub commit: String,
-}
-
-pub struct ReportContext<'a> {
-    pub runner_name: &'a str,
-    pub runner_commit_key: &'a str,
-    pub runner_commit: &'a str,
 }
 
 pub fn finalize_debug_run(report: &ExecutionReport) -> Result<()> {
@@ -39,10 +33,12 @@ pub fn finalize_run(
     wasmer: &WasmerIdentity,
     timeout: Duration,
     filter: Option<&str>,
-    context: ReportContext<'_>,
+    runner_name: &str,
+    runner_commit: &str,
     started_at: &str,
-    status: BTreeMap<String, String>,
+    status: BTreeMap<String, Status>,
     flaky_count: usize,
+    errors: &[ItemError],
 ) -> Result<()> {
     if status.is_empty() {
         bail!("upstream run did not produce any test statuses");
@@ -54,8 +50,8 @@ pub fn finalize_run(
     counts.insert("FLAKY".to_string(), flaky_count);
     let mut runner_metadata = serde_json::Map::new();
     runner_metadata.insert(
-        context.runner_commit_key.to_string(),
-        json!(context.runner_commit),
+        runner_commit_key(runner_name).to_string(),
+        json!(runner_commit),
     );
     let metadata = json!({
         "wasmer": {
@@ -63,7 +59,7 @@ pub fn finalize_run(
             "branch": wasmer.branch,
             "commit": wasmer.commit,
         },
-        (context.runner_name): runner_metadata,
+        (runner_name): runner_metadata,
         "config": {
             "timeout_seconds": timeout.as_secs(),
             "debug_test": filter,
@@ -73,13 +69,16 @@ pub fn finalize_run(
             "finished_at": now_utc(),
         },
         "counts": counts,
+        "errors": {
+            "panics": error_messages(errors),
+        },
     });
     write_json(&workspace.output_dir.join("metadata.json"), &metadata)?;
-    tracing::info!(counts = ?counts, errors = 0usize, "done");
+    tracing::info!(counts = ?counts, errors = errors.len(), "done");
     Ok(())
 }
 
-fn counts_from_status(status: &BTreeMap<String, String>) -> BTreeMap<String, usize> {
+fn counts_from_status(status: &BTreeMap<String, Status>) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::from([
         ("PASS".to_string(), 0),
         ("FAIL".to_string(), 0),
@@ -88,7 +87,7 @@ fn counts_from_status(status: &BTreeMap<String, String>) -> BTreeMap<String, usi
         ("FLAKY".to_string(), 0),
     ]);
     for value in status.values() {
-        if let Some(count) = counts.get_mut(value) {
+        if let Some(count) = counts.get_mut(&value.to_string()) {
             *count += 1;
         }
     }
@@ -102,4 +101,18 @@ fn now_utc() -> String {
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     std::fs::write(path, serde_json::to_string_pretty(value)? + "\n")?;
     Ok(())
+}
+
+fn runner_commit_key(name: &str) -> &str {
+    match name {
+        "python" => "cpython_commit",
+        _ => "upstream_commit",
+    }
+}
+
+fn error_messages(errors: &[ItemError]) -> BTreeMap<String, String> {
+    errors
+        .iter()
+        .map(|error| (error.id.clone(), error.message.clone()))
+        .collect()
 }

@@ -6,20 +6,31 @@ use crate::runtime::WasmerRuntime;
 
 pub struct RustRunner;
 
-impl LangRunner for RustRunner {
-    const OPTS: RunnerOpts = RunnerOpts {
+impl RustRunner {
+    pub const OPTS: RunnerOpts = RunnerOpts {
         name: "rust",
         git_repo: "https://github.com/wasix-org/rust.git",
         git_ref: "v2025-11-07.1+rust-1.90",
         wasmer_package: "rust",
         docker_compose: None,
     };
+}
+
+impl LangRunner for RustRunner {
+    fn opts(&self) -> &'static RunnerOpts {
+        &Self::OPTS
+    }
 
     fn prepare(&self, _workspace: &Workspace, _wasmer: &WasmerRuntime) -> Result<()> {
         Ok(())
     }
 
-    fn discover(&self, _workspace: &Workspace, _filter: Option<&str>) -> Result<Vec<String>> {
+    fn discover(
+        &self,
+        _workspace: &Workspace,
+        _wasmer: &WasmerRuntime,
+        _filter: Option<&str>,
+    ) -> Result<Vec<String>> {
         unimplemented!()
     }
 
