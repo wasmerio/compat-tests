@@ -23,15 +23,24 @@ jobs:
     needs: suite
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           pattern: compat-*
           merge-multiple: true
+          path: .artifacts
+      - id: publish
+        continue-on-error: true
+        env:
+          RESULTS_BRANCH: pr-${{ inputs.comment_pr_number }}
+        run: |
+          commit=$(cargo run --quiet -- update-baseline \
+            --branch "${RESULTS_BRANCH}" \
+            --source-dir .artifacts | tail -n1)
+          echo "results_branch=${RESULTS_BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "results_commit=${commit}" >> "$GITHUB_OUTPUT"
       - run: >
           cargo run --quiet -- pr-comment
           --target-repo "${{ inputs.target_repo }}"
@@ -40,3 +49,7 @@ jobs:
           --comment-repo "wasmerio/wasmer"
           --comment-pr-number "${{ inputs.comment_pr_number }}"
           --github-token "${{ secrets.WASMER_REPO_GH_TOKEN }}"
+          --results-branch "${{ steps.publish.outputs.results_branch }}"
+          --results-commit "${{ steps.publish.outputs.results_commit }}"
+      - if: ${{ steps.publish.outcome == 'failure' }}
+        run: exit 1

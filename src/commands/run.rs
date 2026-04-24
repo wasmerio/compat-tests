@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
@@ -40,8 +40,12 @@ pub struct RunArgs {
     pub filter: Option<String>,
 
     /// Path to existing Wasmer binary to use for testing.
-    #[arg(long, conflicts_with = "wasmer_ref")]
+    #[arg(long, conflicts_with_all = ["wasmer_ref", "wasmer_repo"])]
     pub wasmer: Option<PathBuf>,
+
+    /// Wasmer git repository to clone when building from source.
+    #[arg(long)]
+    pub wasmer_repo: Option<String>,
 
     /// Wasmer git ref to download/build when `--wasmer` is not supplied.
     #[arg(long)]
@@ -117,11 +121,16 @@ fn run_with_runner(
         if let Some(path) = &args.wasmer {
             RuntimeSource::LocalBinary(path.clone())
         } else {
-            RuntimeSource::GitRef(
-                args.wasmer_ref
+            RuntimeSource::Git {
+                repo: args
+                    .wasmer_repo
+                    .clone()
+                    .unwrap_or_else(|| "https://github.com/wasmerio/wasmer.git".to_string()),
+                git_ref: args
+                    .wasmer_ref
                     .clone()
                     .unwrap_or_else(|| "main".to_string()),
-            )
+            }
         },
         &work_root,
         args.timeout,
@@ -134,8 +143,7 @@ fn run_with_runner(
         log.clear()?;
     }
 
-    warmup_package(runner, &wasmer)
-        .map_err(|e| anyhow::anyhow!("warmup failed: {e:?}"))?;
+    warmup_package(runner, &wasmer).map_err(|e| anyhow::anyhow!("warmup failed: {e:?}"))?;
 
     let report = execute_tests(
         runner,
@@ -270,21 +278,26 @@ fn warmup_package(runner: &dyn LangRunner, wasmer: &WasmerRuntime) -> Result<()>
         (Some(package), Some(args)) => (package, args),
         _ => return Ok(()),
     };
-    tracing::info!(runner = opts.name, package, "warming up language runtime package");
-    wasmer.run(
-        RunSpec {
-            target: RunTarget::Package(package.to_string()),
-            flags: opts
-                .wasmer_flags
-                .iter()
-                .map(|flag| (*flag).to_string())
-                .collect(),
-            args: args.iter().map(|arg| (*arg).to_string()).collect(),
-            timeout: None,
-        },
-        crate::process::ignore_stream,
-    )
-    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    tracing::info!(
+        runner = opts.name,
+        package,
+        "warming up language runtime package"
+    );
+    wasmer
+        .run(
+            RunSpec {
+                target: RunTarget::Package(package.to_string()),
+                flags: opts
+                    .wasmer_flags
+                    .iter()
+                    .map(|flag| (*flag).to_string())
+                    .collect(),
+                args: args.iter().map(|arg| (*arg).to_string()).collect(),
+                timeout: None,
+            },
+            crate::process::ignore_stream,
+        )
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(())
 }
 

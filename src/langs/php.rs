@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::collections::hash_map::DefaultHasher;
 
 use anyhow::{Result, anyhow, bail};
 
@@ -83,7 +83,13 @@ impl PhpRunner {
             .collect())
     }
 
-    fn run_one(&self, workspace: &Workspace, wasmer: &WasmerRuntime, job: &TestJob, mode: Mode) -> Result<Vec<TestResult>> {
+    fn run_one(
+        &self,
+        workspace: &Workspace,
+        wasmer: &WasmerRuntime,
+        job: &TestJob,
+        mode: Mode,
+    ) -> Result<Vec<TestResult>> {
         let test_paths: Vec<PathBuf> = job
             .tests
             .iter()
@@ -108,11 +114,7 @@ impl PhpRunner {
             "-W".into(),
             result_file.display().to_string(),
         ];
-        args.extend(
-            test_paths
-                .iter()
-                .map(|path| path.display().to_string()),
-        );
+        args.extend(test_paths.iter().map(|path| path.display().to_string()));
 
         let result = wasmer.run(
             RunSpec {
@@ -203,7 +205,11 @@ impl LangRunner for PhpRunner {
                 .collect(),
         };
         let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
-        tracing::info!(jobs = jobs.len(), tests = total_tests, "discovered php tests");
+        tracing::info!(
+            jobs = jobs.len(),
+            tests = total_tests,
+            "discovered php tests"
+        );
         Ok(jobs)
     }
 

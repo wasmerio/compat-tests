@@ -9,10 +9,9 @@ mod runtime;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::commands::issue::{IssueArgs, issue};
 use crate::commands::pr_comment::{PrCommentArgs, pr_comment};
-use crate::commands::publish::{PublishArgs, publish};
 use crate::commands::run::{RunArgs, run};
+use crate::commands::update_baseline::{UpdateBaselineArgs, update_baseline};
 
 #[derive(Parser)]
 #[command(
@@ -29,12 +28,11 @@ struct Cli {
 enum Command {
     /// Run the upstream test suite for a language.
     Run(RunArgs),
-    /// Commit results/<lang>/… into the named results branch.
-    Publish(PublishArgs),
+    /// Commit status_*.json and metadata_*.json into the named baseline branch.
+    #[command(name = "update-baseline")]
+    UpdateBaseline(UpdateBaselineArgs),
     /// Render the PR comment body from comparison + metadata.
     PrComment(PrCommentArgs),
-    /// Create a regression issue when comparisons show regressions.
-    Issue(IssueArgs),
 }
 
 fn init_tracing() {
@@ -49,8 +47,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run(args) => run(args),
-        Command::Publish(args) => publish(args),
+        Command::UpdateBaseline(args) => update_baseline(args),
         Command::PrComment(args) => pr_comment(args),
-        Command::Issue(args) => issue(args),
     }
 }

@@ -23,5 +23,8 @@ jobs:
         with:
           pattern: compat-*
           merge-multiple: true
+          path: .artifacts
       - run: >
-          cargo run --quiet -- publish --branch main
+          cargo run --quiet -- update-baseline
+          --branch main
+          --source-dir .artifacts

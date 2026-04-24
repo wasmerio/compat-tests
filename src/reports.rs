@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Result, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::commands::run::ItemError;
@@ -13,6 +13,22 @@ use crate::langs::{Status, Workspace};
 pub struct WasmerIdentity {
     pub git_ref: String,
     pub branch: String,
+    pub commit: String,
+}
+
+#[derive(Default, Deserialize)]
+pub struct RunMetadata {
+    #[serde(default)]
+    pub wasmer: WasmerMeta,
+    #[serde(default)]
+    pub counts: BTreeMap<String, usize>,
+}
+
+#[derive(Default, Deserialize)]
+pub struct WasmerMeta {
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
     pub commit: String,
 }
 
@@ -91,6 +107,57 @@ pub fn load_baseline_status(
         &status_filename(runner_name),
     )?
     .unwrap_or_default())
+}
+
+pub fn load_metadata(path: &Path) -> Result<RunMetadata> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+pub fn load_language_summary(
+    output_dir: &Path,
+    lang: &'static str,
+    expected_sha: &str,
+) -> Result<(&'static str, String, bool)> {
+    let path = output_dir.join(metadata_filename(lang));
+    if !path.is_file() {
+        return Ok((lang, "missing artifact".to_string(), false));
+    }
+
+    let metadata = match load_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(err) => return Ok((lang, format!("invalid metadata: {err}"), false)),
+    };
+
+    let actual_sha = metadata
+        .wasmer
+        .commit
+        .get(..expected_sha.len())
+        .unwrap_or("");
+    let sha_ok = metadata.wasmer.commit == expected_sha || actual_sha == expected_sha;
+    let mut counts = ["PASS", "FAIL", "TIMEOUT", "SKIP", "FLAKY"]
+        .into_iter()
+        .map(|key| format!("{key}={}", metadata.counts.get(key).copied().unwrap_or(0)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !metadata.wasmer.branch.is_empty() {
+        counts = format!(
+            "{} @ {} ({counts})",
+            metadata.wasmer.branch, metadata.wasmer.commit
+        );
+    }
+
+    Ok((
+        lang,
+        if sha_ok {
+            counts
+        } else {
+            format!(
+                "sha mismatch: expected {expected_sha}, got {} ({counts})",
+                metadata.wasmer.commit
+            )
+        },
+        sha_ok,
+    ))
 }
 
 fn counts_from_status(status: &BTreeMap<String, Status>) -> BTreeMap<String, usize> {

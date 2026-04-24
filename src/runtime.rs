@@ -18,6 +18,7 @@ use crate::reports::WasmerIdentity;
 use crate::run_log::RunLog;
 
 const WASMER_REPO: &str = "https://github.com/wasmerio/wasmer.git";
+const COMPILE_TIMEOUT: Duration = Duration::from_secs(600);
 pub const WASMER_REGISTRY: &str = "wasmer.io";
 
 pub struct WasmerRuntime {
@@ -28,7 +29,7 @@ pub struct WasmerRuntime {
 
 pub enum RuntimeSource {
     LocalBinary(PathBuf),
-    GitRef(String),
+    Git { repo: String, git_ref: String },
 }
 
 pub struct ResolvedRuntime {
@@ -86,8 +87,8 @@ impl WasmerRuntime {
                     },
                 })
             }
-            RuntimeSource::GitRef(git_ref) => {
-                if git_ref == "main" {
+            RuntimeSource::Git { repo, git_ref } => {
+                if repo == WASMER_REPO && git_ref == "main" {
                     if let Some((binary, commit)) = try_download_prebuilt_main_wasmer(work_root)? {
                         tracing::info!(path = %binary.display(), "using prebuilt Wasmer main artifact");
                         return Ok(ResolvedRuntime {
@@ -105,7 +106,7 @@ impl WasmerRuntime {
                     }
                 }
 
-                let checkout = ensure_checkout(&work_root.join("wasmer"), WASMER_REPO, &git_ref)?;
+                let checkout = ensure_checkout(&work_root.join("wasmer"), &repo, &git_ref)?;
                 update_wasmer_submodules(&checkout)?;
                 tracing::info!(path = %checkout.display(), "building Wasmer from source");
                 run_command(
@@ -198,7 +199,7 @@ impl WasmerRuntime {
                 env: vec![("RUST_BACKTRACE".into(), "1".into())],
                 cwd: std::env::current_dir()
                     .map_err(|e| ProcessError::Spawn(format!("resolve cwd: {e}")))?,
-                timeout: self.default_timeout,
+                timeout: self.default_timeout.max(COMPILE_TIMEOUT),
                 log_output: self.process_log.clone(),
             },
             ignore_stream,

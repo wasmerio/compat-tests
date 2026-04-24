@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -156,7 +156,11 @@ impl PythonRunner {
                 .collect());
         }
         let mut names = BTreeMap::<String, Vec<String>>::new();
-        for line in stdout.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        for line in stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
             if line.starts_with("unittest.loader.") {
                 continue;
             }
@@ -319,7 +323,8 @@ impl LangRunner for PythonRunner {
             selected_modules
                 .par_iter()
                 .map(|module| {
-                    let result = self.discover_cases(workspace, wasmer, std::slice::from_ref(module));
+                    let result =
+                        self.discover_cases(workspace, wasmer, std::slice::from_ref(module));
                     let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
                     if done % 25 == 0 || done == selected_modules.len() {
                         tracing::info!(
