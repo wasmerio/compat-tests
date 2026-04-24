@@ -1,4 +1,5 @@
 __pycache__/
+.cache/
 .work/
 comparison.json
 test*.log

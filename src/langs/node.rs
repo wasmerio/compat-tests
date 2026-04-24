@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
-use crate::process::{ProcessError, ProcessSpec, ignore_stream, run_process, write_stream};
+use crate::process::{ignore_stream, run_process, write_stream, ProcessError, ProcessSpec};
 use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
 

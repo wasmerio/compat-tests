@@ -391,7 +391,10 @@ mod tests {
     fn runtime_resolves_git() {
         let dir = TempDir::new("shield-runtime-main").expect("tempdir");
         let resolved = WasmerRuntime::resolve(
-            RuntimeSource::GitRef("main".to_string()),
+            RuntimeSource::Git {
+                repo: WASMER_REPO.to_string(),
+                git_ref: "main".to_string(),
+            },
             dir.path(),
             Duration::from_secs(10),
             Arc::new(RunLog::new(dir.path().join("process.log"))),

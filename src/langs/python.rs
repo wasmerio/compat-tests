@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use rayon::prelude::*;
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
-use crate::process::{ProcessError, write_stream};
+use crate::process::{write_stream, ProcessError};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
 

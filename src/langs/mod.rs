@@ -35,7 +35,7 @@ pub struct Workspace {
     pub work_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestJob {
     pub id: String,
     pub tests: Vec<String>,

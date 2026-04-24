@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::{Args, ValueEnum};
 use rayon::prelude::*;
 
@@ -309,7 +310,21 @@ fn execute_tests(
     filter: Option<&str>,
     mode: Mode,
 ) -> Result<ExecutionReport> {
-    let jobs = runner.discover(workspace, wasmer, filter, mode)?;
+    let cache_path = workspace
+        .output_dir
+        .join(".cache")
+        .join(runner.opts().name)
+        .join("tests.json");
+    let jobs = if filter.is_none() && cache_path.is_file() {
+        serde_json::from_slice(&fs::read(&cache_path)?)?
+    } else {
+        let jobs = runner.discover(workspace, wasmer, filter, mode)?;
+        if filter.is_none() {
+            fs::create_dir_all(cache_path.parent().unwrap())?;
+            fs::write(&cache_path, serde_json::to_vec_pretty(&jobs)?)?;
+        }
+        jobs
+    };
     if jobs.is_empty() {
         match filter {
             Some(f) => bail!("no tests matched filter {f:?}"),
@@ -420,22 +435,29 @@ mod tests {
 
     #[test]
     fn mock_runner_reports_mixed_statuses() {
-        let workspace = Workspace {
-            output_dir: PathBuf::new(),
-            checkout: PathBuf::new(),
-            work_dir: PathBuf::new(),
-        };
+        let cwd = std::env::current_dir().expect("cwd");
         let dir = TempDir::new("shield-run").expect("tempdir");
+        let workspace = Workspace {
+            output_dir: dir.path().to_path_buf(),
+            checkout: cwd,
+            work_dir: dir.path().to_path_buf(),
+        };
         let wasmer = WasmerRuntime::resolve(
             RuntimeSource::LocalBinary("wasmer".into()),
             dir.path(),
             Duration::ZERO,
             Arc::new(RunLog::new(dir.path().join("process.log"))),
         )
-        .expect("resolve")
-        .runtime;
-        let report = execute_tests(&MockRunner, &workspace, &wasmer, None, None, Mode::Capture)
-            .expect("execute_tests should succeed");
+        .expect("resolve");
+        let report = execute_tests(
+            &MockRunner,
+            &workspace,
+            &wasmer.runtime,
+            None,
+            None,
+            Mode::Capture,
+        )
+        .expect("execute_tests should succeed");
 
         assert_eq!(
             report,
@@ -487,6 +509,7 @@ mod tests {
                     "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later".into(),
                 ),
                 wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_repo: None,
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30),
                 compare_ref: "origin/main".into(),
@@ -516,6 +539,7 @@ mod tests {
                 lang: Lang::Php,
                 filter: Some("tests/basic/001.phpt".into()),
                 wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_repo: None,
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30),
                 compare_ref: "origin/main".into(),
@@ -544,6 +568,7 @@ mod tests {
                 lang: Lang::Node,
                 filter: Some("parallel/test-global.js".into()),
                 wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_repo: None,
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30),
                 compare_ref: "origin/main".into(),
@@ -574,6 +599,7 @@ mod tests {
                     "library::alloctests::alloctests-47068aef54e24049::vec::test_append".into(),
                 ),
                 wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
+                wasmer_repo: None,
                 wasmer_ref: None,
                 timeout: Duration::from_secs(30000),
                 compare_ref: "origin/main".into(),
