@@ -1993,14 +1993,24 @@ fn artifact_path_from_job(workspace: &Workspace, id: &str) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("unknown rust workspace {workspace_name:?}"))?;
     let deps = root.join("target").join(TARGET).join("debug").join("deps");
     let mut matches = BTreeSet::new();
+    let artifact_prefix = strip_cargo_hash(artifact);
     collect_matching_wasms(
         &deps,
-        &[artifact.to_string(), package.to_string()],
+        &[artifact_prefix.to_string(), package.to_string()],
         &mut matches,
     )?;
     matches
-        .into_iter()
+        .iter()
         .find(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(artifact))
+        .cloned()
+        .or_else(|| {
+            matches.into_iter().find(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(strip_cargo_hash)
+                    == Some(artifact_prefix)
+            })
+        })
         .ok_or_else(|| anyhow!("rust artifact {id:?} missing under {}", deps.display()))
 }
 
@@ -2077,6 +2087,13 @@ fn artifact_id(target: &RustTarget, wasm: &Path) -> String {
         .and_then(|stem| stem.to_str())
         .unwrap_or("artifact");
     format!("{}::{}::{stem}", target.workspace, target.package)
+}
+
+fn strip_cargo_hash(stem: &str) -> &str {
+    stem.rsplit_once('-')
+        .filter(|(_, hash)| hash.len() == 16 && hash.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(|(prefix, _)| prefix)
+        .unwrap_or(stem)
 }
 
 fn case_matches_filter(case_id: &str, test_name: &str, filter: &str) -> bool {
@@ -2156,6 +2173,7 @@ fn tail(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempdir::TempDir;
 
     #[test]
     fn parses_metadata_targets() {
@@ -2261,5 +2279,43 @@ mod tests {
                 tests: vec![filter.into()],
             }]
         );
+    }
+
+    #[test]
+    fn artifact_path_accepts_changed_cargo_hash() {
+        let dir = TempDir::new("rust-artifact-cache").unwrap();
+        let checkout = dir.path().join("checkout");
+        let deps = checkout
+            .join("target")
+            .join(TARGET)
+            .join("debug")
+            .join("deps");
+        fs::create_dir_all(&deps).unwrap();
+        let wasm = deps.join("rustc_ast_lowering-2222222222222222.wasm");
+        fs::write(&wasm, b"wasm").unwrap();
+        fs::write(deps.join("rustc_ast_passes-3333333333333333.wasm"), b"wasm").unwrap();
+        let workspace = Workspace {
+            output_dir: dir.path().join("out"),
+            checkout,
+            work_dir: dir.path().join("work"),
+        };
+
+        assert_eq!(
+            artifact_path_from_job(
+                &workspace,
+                "root::rustc_ast::rustc_ast_lowering-1111111111111111"
+            )
+            .unwrap(),
+            wasm
+        );
+    }
+
+    #[test]
+    fn strip_cargo_hash_only_removes_hex_disambiguator() {
+        assert_eq!(
+            strip_cargo_hash("rustc_ast_lowering-1111111111111111"),
+            "rustc_ast_lowering"
+        );
+        assert_eq!(strip_cargo_hash("alloctests-new"), "alloctests-new");
     }
 }
