@@ -95,12 +95,17 @@ fn commit_message(source_dir: &Path, files: &[String]) -> Result<String> {
     let metadata_path = source_dir.join(metadata);
     let metadata = load_metadata(&metadata_path)
         .with_context(|| format!("parse {}", metadata_path.display()))?;
-    let target = if metadata.wasmer.branch.is_empty() {
+    let target = if metadata.wasmer.git_ref.is_empty() {
         metadata.wasmer.commit
     } else if metadata.wasmer.commit.is_empty() {
-        metadata.wasmer.branch
+        metadata.wasmer.git_ref
     } else {
-        format!("{} @ {}", metadata.wasmer.branch, metadata.wasmer.commit)
+        format!("{} @ {}", metadata.wasmer.git_ref, metadata.wasmer.commit)
+    };
+    let target = if metadata.wasmer.repo.is_empty() {
+        target
+    } else {
+        format!("{} ({target})", metadata.wasmer.repo)
     };
     Ok(format!("compat: refresh snapshot for {target}"))
 }

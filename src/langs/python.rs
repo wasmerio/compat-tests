@@ -185,8 +185,8 @@ impl PythonRunner {
                     }
                 }
             }
-            Err(ProcessError::RustPanic(message)) => {
-                return Err(anyhow!(ProcessError::RustPanic(message)));
+            Err(ProcessError::RustCrash(message)) => {
+                return Err(anyhow!(ProcessError::RustCrash(message)));
             }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
             Err(ProcessError::Timeout(_)) => unreachable!(),
@@ -239,8 +239,8 @@ impl PythonRunner {
             }
             Err(ProcessError::AbnormalExit(_)) => {}
             Err(ProcessError::Timeout(_)) => {}
-            Err(ProcessError::RustPanic(message)) => {
-                return Err(anyhow!(ProcessError::RustPanic(message.clone())));
+            Err(ProcessError::RustCrash(message)) => {
+                return Err(anyhow!(ProcessError::RustCrash(message.clone())));
             }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message.clone())),
         }
@@ -414,8 +414,8 @@ impl LangRunner for PythonRunner {
                     Ok(()) => Status::Pass,
                     Err(ProcessError::Timeout(_)) => Status::Timeout,
                     Err(ProcessError::AbnormalExit(_)) => Status::Fail,
-                    Err(ProcessError::RustPanic(message)) => {
-                        return Err(anyhow!(ProcessError::RustPanic(message)));
+                    Err(ProcessError::RustCrash(message)) => {
+                        return Err(anyhow!(ProcessError::RustCrash(message)));
                     }
                     Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
                 };

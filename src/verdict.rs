@@ -55,10 +55,10 @@ struct LanguageVerdict {
     delta_pass: isize,
     delta_fail: isize,
     delta_timeout: isize,
-    delta_panic: isize,
+    delta_crash: isize,
     improvements: Vec<TestChange>,
     regressions: Vec<TestChange>,
-    panic_example: Option<PanicExample>,
+    crash_example: Option<CrashExample>,
     failure_example: Option<FailureExample>,
 }
 
@@ -69,7 +69,7 @@ struct TestChange {
     after: Status,
 }
 
-struct PanicExample {
+struct CrashExample {
     repro_command: Option<String>,
     test_source: Option<Link>,
     output: Option<String>,
@@ -119,7 +119,7 @@ fn collect_language_verdict(
 
     let improvements = changed_tests(&baseline_status, &status, is_improvement);
     let regressions = changed_tests(&baseline_status, &status, is_regression);
-    let panic_example = first_new_panic(&metadata, &baseline_metadata);
+    let crash_example = first_new_crash(&metadata, &baseline_metadata);
 
     Ok(LanguageVerdict {
         config,
@@ -128,10 +128,10 @@ fn collect_language_verdict(
         delta_pass: count_delta(&baseline_metadata, &metadata, "PASS"),
         delta_fail: count_delta(&baseline_metadata, &metadata, "FAIL"),
         delta_timeout: count_delta(&baseline_metadata, &metadata, "TIMEOUT"),
-        delta_panic: panic_count(&metadata) as isize - panic_count(&baseline_metadata) as isize,
+        delta_crash: crash_count(&metadata) as isize - crash_count(&baseline_metadata) as isize,
         improvements,
         regressions,
-        panic_example,
+        crash_example,
         failure_example: None,
     })
 }
@@ -177,7 +177,7 @@ fn is_improvement(before: Status, after: Status) -> bool {
 fn verdict_kind(languages: &[LanguageVerdict]) -> VerdictKind {
     if languages
         .iter()
-        .any(|lang| lang.panic_example.is_some() || !lang.regressions.is_empty())
+        .any(|lang| lang.crash_example.is_some() || !lang.regressions.is_empty())
     {
         VerdictKind::Regression
     } else if languages.iter().any(|lang| !lang.improvements.is_empty()) {
@@ -205,30 +205,16 @@ fn count_delta(before: &RunMetadata, after: &RunMetadata, key: &str) -> isize {
         - before.counts.get(key).copied().unwrap_or(0) as isize
 }
 
-fn panic_count(metadata: &RunMetadata) -> usize {
-    metadata
-        .errors
-        .job_errors
-        .values()
-        .filter(|message| is_panic_message(message))
-        .count()
+fn crash_count(metadata: &RunMetadata) -> usize {
+    metadata.crashes.len()
 }
 
-fn is_panic_message(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("panic") || lower.contains("panicked at")
-}
-
-fn first_new_panic(candidate: &RunMetadata, baseline: &RunMetadata) -> Option<PanicExample> {
+fn first_new_crash(candidate: &RunMetadata, baseline: &RunMetadata) -> Option<CrashExample> {
     candidate
-        .errors
-        .job_errors
+        .crashes
         .iter()
-        .find(|(job_id, message)| {
-            is_panic_message(message)
-                && baseline.errors.job_errors.get(*job_id) != Some(*message)
-        })
-        .map(|(_job_id, message)| PanicExample {
+        .find(|(job_id, message)| baseline.crashes.get(*job_id) != Some(*message))
+        .map(|(_job_id, message)| CrashExample {
             repro_command: None,
             test_source: None,
             output: Some(message.clone()),
@@ -263,14 +249,14 @@ fn render_regression(
     render_table(body, languages);
 
     for lang in languages {
-        if let Some(panic) = &lang.panic_example {
+        if let Some(crash) = &lang.crash_example {
             let _ = writeln!(body);
-            let _ = writeln!(body, "### Example panic from {}", lang.config.label);
+            let _ = writeln!(body, "### Example crash from {}", lang.config.label);
             let _ = writeln!(body);
-            if let Some(repro) = &panic.repro_command {
+            if let Some(repro) = &crash.repro_command {
                 let _ = writeln!(body, "- Repro command: `{repro}`");
             }
-            if let Some(source) = &panic.test_source {
+            if let Some(source) = &crash.test_source {
                 let _ = writeln!(body, "- Test source: {}", markdown_link(&source.label, &source.url));
             }
             let _ = writeln!(
@@ -281,7 +267,7 @@ fn render_regression(
                     &status_url(lang.config.name, results_branch, results_commit)
                 )
             );
-            if let Some(output) = &panic.output {
+            if let Some(output) = &crash.output {
                 let _ = writeln!(body);
                 let _ = writeln!(body, "```text");
                 let _ = writeln!(body, "{}", output.trim_end());
@@ -379,7 +365,7 @@ fn render_no_changes(
 fn render_table(body: &mut String, languages: &[LanguageVerdict]) {
     let _ = writeln!(
         body,
-        "| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | PANIC |"
+        "| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | CRASH |"
     );
     let _ = writeln!(
         body,
@@ -395,7 +381,7 @@ fn render_table(body: &mut String, languages: &[LanguageVerdict]) {
             color_delta(DeltaKind::Pass, lang.delta_pass),
             color_delta(DeltaKind::Fail, lang.delta_fail),
             color_delta(DeltaKind::Timeout, lang.delta_timeout),
-            color_delta(DeltaKind::Panic, lang.delta_panic),
+            color_delta(DeltaKind::Crash, lang.delta_crash),
         );
     }
 }
@@ -488,7 +474,7 @@ enum DeltaKind {
     Pass,
     Fail,
     Timeout,
-    Panic,
+    Crash,
 }
 
 fn color_delta(kind: DeltaKind, delta: isize) -> String {
@@ -497,7 +483,7 @@ fn color_delta(kind: DeltaKind, delta: isize) -> String {
     }
     let good = match kind {
         DeltaKind::Pass => delta > 0,
-        DeltaKind::Fail | DeltaKind::Timeout | DeltaKind::Panic => delta < 0,
+        DeltaKind::Fail | DeltaKind::Timeout | DeltaKind::Crash => delta < 0,
     };
     let color = if good { "green" } else { "red" };
     format!("$${{\\color{{{}}}{:+}}}$$", color, delta)
@@ -553,7 +539,7 @@ mod tests {
                 delta_pass: 435,
                 delta_fail: -102,
                 delta_timeout: -788,
-                delta_panic: 0,
+                delta_crash: 0,
                 improvements: vec![
                     change(
                         "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later",
@@ -582,7 +568,7 @@ mod tests {
                     ),
                 ],
                 regressions: vec![],
-                panic_example: None,
+                crash_example: None,
                 failure_example: None,
             },
             LanguageVerdict {
@@ -592,7 +578,7 @@ mod tests {
                 delta_pass: 13,
                 delta_fail: -11,
                 delta_timeout: -2,
-                delta_panic: 0,
+                delta_crash: 0,
                 improvements: vec![
                     change("parallel/test-fs-stat.js", Status::Fail, Status::Pass),
                     change(
@@ -617,7 +603,7 @@ mod tests {
                     ),
                 ],
                 regressions: vec![],
-                panic_example: None,
+                crash_example: None,
                 failure_example: None,
             },
             LanguageVerdict {
@@ -627,7 +613,7 @@ mod tests {
                 delta_pass: 3,
                 delta_fail: -3,
                 delta_timeout: 0,
-                delta_panic: 0,
+                delta_crash: 0,
                 improvements: vec![
                     change("ext/standard/tests/strings/trim_basic.phpt", Status::Fail, Status::Pass),
                     change("ext/standard/tests/strings/strval_basic.phpt", Status::Fail, Status::Pass),
@@ -644,7 +630,7 @@ mod tests {
                     ),
                 ],
                 regressions: vec![],
-                panic_example: None,
+                crash_example: None,
                 failure_example: None,
             },
             LanguageVerdict {
@@ -654,7 +640,7 @@ mod tests {
                 delta_pass: 2,
                 delta_fail: -2,
                 delta_timeout: 0,
-                delta_panic: 0,
+                delta_crash: 0,
                 improvements: vec![
                     change("env::home_dir_with_relative_input", Status::Fail, Status::Pass),
                     change(
@@ -671,7 +657,7 @@ mod tests {
                     change("path::strip_prefix_handles_root", Status::Fail, Status::Pass),
                 ],
                 regressions: vec![],
-                panic_example: None,
+                crash_example: None,
                 failure_example: None,
             },
         ]
@@ -686,14 +672,14 @@ mod tests {
                 delta_pass: -10,
                 delta_fail: 7,
                 delta_timeout: 3,
-                delta_panic: 0,
+                delta_crash: 0,
                 improvements: vec![],
                 regressions: vec![change(
                     "test.test_shutil.TestMove.test_move_symlink_to_file",
                     Status::Pass,
                     Status::Fail,
                 )],
-                panic_example: None,
+                crash_example: None,
                 failure_example: Some(FailureExample {
                     repro_command: Some(
                         "shield run --lang python --wasmer [WASMER BINARY] test.test_shutil.TestMove.test_move_symlink_to_file"
@@ -718,14 +704,14 @@ mod tests {
                 delta_pass: -2,
                 delta_fail: 1,
                 delta_timeout: 1,
-                delta_panic: 0,
+                delta_crash: 0,
                 improvements: vec![],
                 regressions: vec![change(
                     "parallel/test-fs-symlink.js",
                     Status::Pass,
                     Status::Fail,
                 )],
-                panic_example: None,
+                crash_example: None,
                 failure_example: Some(FailureExample {
                     repro_command: Some(
                         "shield run --lang node --wasmer [WASMER BINARY] parallel/test-fs-symlink.js"
@@ -750,14 +736,14 @@ mod tests {
                 delta_pass: -96,
                 delta_fail: 106,
                 delta_timeout: -10,
-                delta_panic: 3,
+                delta_crash: 3,
                 improvements: vec![],
                 regressions: vec![change(
                     "ext/standard/tests/file/rename_variation5.phpt",
                     Status::Pass,
                     Status::Fail,
                 )],
-                panic_example: Some(PanicExample {
+                crash_example: Some(CrashExample {
                     repro_command: Some(
                         "shield run --lang php --wasmer [WASMER BINARY] php-batch-0316"
                             .to_string(),
@@ -780,10 +766,10 @@ mod tests {
                 delta_pass: 0,
                 delta_fail: 0,
                 delta_timeout: 0,
-                delta_panic: 0,
+                delta_crash: 0,
                 improvements: vec![],
                 regressions: vec![],
-                panic_example: None,
+                crash_example: None,
                 failure_example: None,
             },
         ]

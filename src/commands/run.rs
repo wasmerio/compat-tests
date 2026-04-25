@@ -630,10 +630,8 @@ mod tests {
             &fs::read(dir.path().join("metadata_mock.json")).expect("metadata"),
         )
         .expect("parse metadata");
-        let error = metadata["errors"]["job_errors"]["panic_g"]
-            .as_str()
-            .expect("job error");
-        assert!(error.contains("rust panic: fatal runtime error: stack overflow, aborting"));
+        let error = metadata["crashes"]["panic_g"].as_str().expect("job crash");
+        assert!(error.contains("crash: fatal runtime error: stack overflow, aborting"));
         assert!(error.contains("repro: cargo run -- run --lang mock"));
         assert!(error.contains("- panic_g"));
     }

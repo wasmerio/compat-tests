@@ -11,8 +11,8 @@ use crate::git::file_json;
 use crate::langs::{Status, Workspace};
 
 pub struct WasmerIdentity {
+    pub repo: String,
     pub git_ref: String,
-    pub branch: String,
     pub commit: String,
 }
 
@@ -23,21 +23,17 @@ pub struct RunMetadata {
     #[serde(default)]
     pub counts: BTreeMap<String, usize>,
     #[serde(default)]
-    pub errors: RunErrors,
+    pub crashes: BTreeMap<String, String>,
 }
 
 #[derive(Default, Deserialize)]
 pub struct WasmerMeta {
     #[serde(default)]
-    pub branch: String,
+    pub repo: String,
+    #[serde(default)]
+    pub git_ref: String,
     #[serde(default)]
     pub commit: String,
-}
-
-#[derive(Default, Deserialize)]
-pub struct RunErrors {
-    #[serde(default)]
-    pub job_errors: BTreeMap<String, String>,
 }
 
 pub struct RunConfig<'a> {
@@ -73,23 +69,20 @@ pub fn finalize_run(
     runner_metadata.insert("commit".to_string(), json!(config.runner_commit));
     let metadata = json!({
         "wasmer": {
+            "repo": wasmer.repo,
             "ref": wasmer.git_ref,
-            "branch": wasmer.branch,
             "commit": wasmer.commit,
         },
         (config.runner_name): runner_metadata,
         "config": {
             "timeout_seconds": config.timeout.as_secs(),
-            "debug_test": config.filter,
         },
         "run": {
             "started_at": config.started_at,
             "finished_at": now_utc(),
         },
         "counts": counts,
-        "errors": {
-            "job_errors": error_messages(errors),
-        },
+        "crashes": error_messages(errors),
     });
     write_json(
         &workspace

@@ -35,8 +35,8 @@ pub enum ProcessError {
     Spawn(String),
     /// Timeout waiting for the process to finish
     Timeout(String),
-    /// Process exited with Rust panic in the output
-    RustPanic(String),
+    /// Process exited with a runtime crash in the output
+    RustCrash(String),
     /// Process exited with non 0 exit code
     AbnormalExit(String),
 }
@@ -46,7 +46,7 @@ impl std::fmt::Display for ProcessError {
         match self {
             ProcessError::Spawn(message) => write!(f, "spawn failed: {message}"),
             ProcessError::Timeout(message) => f.write_str(message),
-            ProcessError::RustPanic(message) => write!(f, "rust panic: {message}"),
+            ProcessError::RustCrash(message) => write!(f, "crash: {message}"),
             ProcessError::AbnormalExit(message) => {
                 write!(f, "process exited abnormally: {message}")
             }
@@ -159,7 +159,7 @@ where
         return Ok(());
     }
     if let Some(capture) = state.panic_capture {
-        Err(ProcessError::RustPanic(capture.text))
+        Err(ProcessError::RustCrash(capture.text))
     } else {
         Err(ProcessError::AbnormalExit(format_exit_status(status)))
     }
@@ -444,7 +444,7 @@ mod tests {
         )
         .expect_err("panic");
         match err {
-            ProcessError::RustPanic(text) => {
+            ProcessError::RustCrash(text) => {
                 assert_eq!(text, "thread 'main' panicked at boom\nnext\n")
             }
             other => panic!("unexpected error: {other:?}"),
@@ -459,7 +459,7 @@ mod tests {
         )
         .expect_err("panic");
         match err {
-            ProcessError::RustPanic(text) => {
+            ProcessError::RustCrash(text) => {
                 assert!(text.contains("has overflowed its stack"));
                 assert!(text.contains("fatal runtime error: stack overflow"));
             }
@@ -475,7 +475,7 @@ mod tests {
         )
         .expect_err("runtime trap");
         match err {
-            ProcessError::RustPanic(text) => {
+            ProcessError::RustCrash(text) => {
                 assert!(text.contains("RuntimeError: out of bounds memory access"));
                 assert!(text.contains("<module>[9015]"));
             }
@@ -519,7 +519,7 @@ mod tests {
         )
         .expect_err("panic");
         match err {
-            ProcessError::RustPanic(text) => {
+            ProcessError::RustCrash(text) => {
                 assert_eq!(text, "thread 'main' panicked at boom\nnext\n");
             }
             other => panic!("unexpected error: {other:?}"),
@@ -534,7 +534,7 @@ mod tests {
         )
         .expect_err("panic");
         match err {
-            ProcessError::RustPanic(text) => {
+            ProcessError::RustCrash(text) => {
                 assert_eq!(text, "thread 'main' panicked at boom\nFAIL detail\n");
             }
             other => panic!("unexpected error: {other:?}"),
@@ -549,7 +549,7 @@ mod tests {
         )
         .expect_err("panic");
         match err {
-            ProcessError::RustPanic(text) => {
+            ProcessError::RustCrash(text) => {
                 assert_eq!(text, "thread 'main' panicked at boom\n");
             }
             other => panic!("unexpected error: {other:?}"),

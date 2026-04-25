@@ -1,6 +1,6 @@
 # Shield - Improvement 🎉🎉🎉
 
-| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | PANIC |
+| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | CRASH |
 | -------- | ------ | ------------- | ---- | ---- | ------- | ----- |
 | Python | 37,907 | 75.8% | $${\color{green}+435}$$ | $${\color{green}-102}$$ | $${\color{green}-788}$$ | 0 |
 | Node.js | 16,030 | 51.2% | $${\color{green}+13}$$ | $${\color{green}-11}$$ | $${\color{green}-2}$$ | 0 |

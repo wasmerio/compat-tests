@@ -98,8 +98,8 @@ impl WasmerRuntime {
                     tracing::info!(path = %binary.display(), "using prebuilt Wasmer main artifact");
                     return Ok(ResolvedRuntime {
                         identity: WasmerIdentity {
+                            repo: repo.clone(),
                             git_ref: git_ref.clone(),
-                            branch: git_ref.clone(),
                             commit,
                         },
                         runtime: Self {
@@ -132,8 +132,8 @@ impl WasmerRuntime {
                 }
                 Ok(ResolvedRuntime {
                     identity: WasmerIdentity {
+                        repo,
                         git_ref: git_ref.clone(),
-                        branch: git_ref,
                         commit: head_commit(&checkout)?,
                     },
                     runtime: Self {
@@ -219,14 +219,14 @@ fn resolve_local_wasmer_identity(wasmer_bin: &Path) -> Result<WasmerIdentity> {
         let branch = current_branch(&checkout)?;
         let commit = head_commit(&checkout)?;
         return Ok(WasmerIdentity {
+            repo: WASMER_REPO.to_string(),
             git_ref: branch.clone(),
-            branch,
             commit,
         });
     }
     Ok(WasmerIdentity {
+        repo: "local".to_string(),
         git_ref: "local".to_string(),
-        branch: "local".to_string(),
         commit: "local".to_string(),
     })
 }

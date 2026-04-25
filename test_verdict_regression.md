@@ -1,13 +1,13 @@
 # Shield - Regression 💩💩💩
 
-| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | PANIC |
+| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | CRASH |
 | -------- | ------ | ------------- | ---- | ---- | ------- | ----- |
 | Python | 37,906 | 75.7% | $${\color{red}-10}$$ | $${\color{red}+7}$$ | $${\color{red}+3}$$ | 0 |
 | Node.js | 16,024 | 51.1% | $${\color{red}-2}$$ | $${\color{red}+1}$$ | $${\color{red}+1}$$ | 0 |
 | PHP | 19,636 | 72.8% | $${\color{red}-96}$$ | $${\color{red}+106}$$ | $${\color{green}-10}$$ | $${\color{red}+3}$$ |
 | Rust | 15,423 | 84.8% | 0 | 0 | 0 | 0 |
 
-### Example panic from PHP
+### Example crash from PHP
 
 - Repro command: `shield run --lang php --wasmer [WASMER BINARY] php-batch-0316`
 - Test source: [rename_variation5.phpt](https://github.com/php/php-src/blob/master/ext/standard/tests/file/rename_variation5.phpt)

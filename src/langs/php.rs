@@ -142,8 +142,8 @@ impl PhpRunner {
                 return Err(anyhow!(ProcessError::AbnormalExit(message)));
             }
             Err(ProcessError::AbnormalExit(_)) => Status::Fail,
-            Err(ProcessError::RustPanic(message)) => {
-                return Err(anyhow!(ProcessError::RustPanic(message)));
+            Err(ProcessError::RustCrash(message)) => {
+                return Err(anyhow!(ProcessError::RustCrash(message)));
             }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
         };

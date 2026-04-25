@@ -189,7 +189,7 @@ pub mod tests {
                 "timeout" => Status::Timeout,
                 "flaky" => Status::Flaky,
                 "panic" => {
-                    return Err(anyhow::anyhow!(ProcessError::RustPanic(
+                    return Err(anyhow::anyhow!(ProcessError::RustCrash(
                         "fatal runtime error: stack overflow, aborting".into()
                     )));
                 }
