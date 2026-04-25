@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
@@ -38,7 +38,7 @@ pub enum ProcessError {
     /// Process exited with Rust panic in the output
     RustPanic(String),
     /// Process exited with non 0 exit code
-    AbnormalExit,
+    AbnormalExit(String),
 }
 
 impl std::fmt::Display for ProcessError {
@@ -47,7 +47,9 @@ impl std::fmt::Display for ProcessError {
             ProcessError::Spawn(message) => write!(f, "spawn failed: {message}"),
             ProcessError::Timeout(message) => f.write_str(message),
             ProcessError::RustPanic(message) => write!(f, "rust panic: {message}"),
-            ProcessError::AbnormalExit => f.write_str("process exited abnormally"),
+            ProcessError::AbnormalExit(message) => {
+                write!(f, "process exited abnormally: {message}")
+            }
         }
     }
 }
@@ -63,8 +65,13 @@ enum ProcessEvent {
 
 struct ProcessState {
     open_streams: usize,
-    panic_capture: Option<String>,
+    panic_capture: Option<PanicCapture>,
     timed_out: bool,
+}
+
+struct PanicCapture {
+    stream: Stream,
+    text: String,
 }
 
 /// Runs a process with a given timeout and streams stdout/stderr to the caller in realtime
@@ -123,7 +130,9 @@ where
                             state.timed_out = true;
                         }
                         Err(_) => {
-                            abort = Some(ProcessError::AbnormalExit);
+                            abort = Some(ProcessError::AbnormalExit(
+                                "failed to query process status".to_string(),
+                            ));
                             break;
                         }
                     }
@@ -132,7 +141,9 @@ where
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-    let status = child.wait().map_err(|_| ProcessError::AbnormalExit)?;
+    let status = child
+        .wait()
+        .map_err(|_| ProcessError::AbnormalExit("failed to wait for process".to_string()))?;
     join_reader(stdout_handle)?;
     join_reader(stderr_handle)?;
     if let Some(err) = abort {
@@ -148,10 +159,14 @@ where
         return Ok(());
     }
     if let Some(capture) = state.panic_capture {
-        Err(ProcessError::RustPanic(capture))
+        Err(ProcessError::RustPanic(capture.text))
     } else {
-        Err(ProcessError::AbnormalExit)
+        Err(ProcessError::AbnormalExit(format_exit_status(status)))
     }
+}
+
+fn format_exit_status(status: ExitStatus) -> String {
+    status.to_string()
 }
 
 fn spawn_process(
@@ -176,7 +191,9 @@ where
 {
     match event {
         ProcessEvent::Line(stream, line) => handle_line(state, log_output, on_line, stream, line),
-        ProcessEvent::ReadError => Err(ProcessError::AbnormalExit),
+        ProcessEvent::ReadError => Err(ProcessError::AbnormalExit(
+            "failed to read process output".to_string(),
+        )),
         ProcessEvent::Closed => {
             state.open_streams -= 1;
             Ok(())
@@ -195,17 +212,53 @@ where
     F: FnMut(Stream, &str) -> Result<()>,
 {
     if state.panic_capture.is_none() && starts_rust_panic_capture(&line) {
-        state.panic_capture = Some(String::new());
+        state.panic_capture = Some(PanicCapture {
+            stream,
+            text: String::new(),
+        });
     }
-    if let Some(capture) = &mut state.panic_capture {
-        capture.push_str(&line);
-        capture.push('\n');
+    if let Some(capture) = &mut state.panic_capture
+        && capture.stream == stream
+        && !is_tracing_json_line(&line)
+    {
+        push_panic_line(&mut capture.text, &line);
     }
     log_output
         .write_line(stream_name(stream), &line)
-        .map_err(|_| ProcessError::AbnormalExit)?;
-    on_line(stream, &line).map_err(|_| ProcessError::AbnormalExit)?;
+        .map_err(|_| ProcessError::AbnormalExit("failed to write process log".to_string()))?;
+    on_line(stream, &line)
+        .map_err(|_| ProcessError::AbnormalExit("process output callback failed".to_string()))?;
     Ok(())
+}
+
+fn push_panic_line(capture: &mut String, line: &str) {
+    let line = strip_ansi(line).replace('\r', "\n");
+    capture.push_str(&line);
+    if !line.ends_with('\n') {
+        capture.push('\n');
+    }
+}
+
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for ch in chars.by_ref() {
+                if ch.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn is_tracing_json_line(line: &str) -> bool {
+    line.starts_with("{\"timestamp\"") && line.contains("\"level\"")
 }
 
 fn starts_rust_panic_capture(line: &str) -> bool {
@@ -254,7 +307,9 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
 }
 
 fn join_reader(handle: thread::JoinHandle<()>) -> std::result::Result<(), ProcessError> {
-    handle.join().map_err(|_| ProcessError::AbnormalExit)
+    handle
+        .join()
+        .map_err(|_| ProcessError::AbnormalExit("output reader thread panicked".to_string()))
 }
 
 pub fn run_command(cmd: &mut Command) -> Result<()> {
@@ -398,6 +453,63 @@ mod tests {
             ProcessError::RustPanic(text) => {
                 assert!(text.contains("has overflowed its stack"));
                 assert!(text.contains("fatal runtime error: stack overflow"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_reports_abnormal_exit_status() {
+        let err = run_process(sh("exit 7"), |_, _| Ok(())).expect_err("exit");
+        match err {
+            ProcessError::AbnormalExit(message) => assert!(
+                message.contains("7"),
+                "expected exit status in message, got {message:?}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_panic_capture_uses_panic_stream_only() {
+        let err = run_process(
+            sh("printf \"thread 'main' panicked at boom\\nnext\\n\" 1>&2; printf \"TEST 1/1\\r\\033[1;32mPASS\\033[0m noisy\\n\"; exit 101"),
+            |_, _| Ok(()),
+        )
+        .expect_err("panic");
+        match err {
+            ProcessError::RustPanic(text) => {
+                assert_eq!(text, "thread 'main' panicked at boom\nnext\n");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_panic_capture_sanitizes_carriage_returns_and_ansi() {
+        let err = run_process(
+            sh("printf \"thread 'main' panicked at boom\\r\\033[1;31mFAIL\\033[0m detail\\n\" 1>&2; exit 101"),
+            |_, _| Ok(()),
+        )
+        .expect_err("panic");
+        match err {
+            ProcessError::RustPanic(text) => {
+                assert_eq!(text, "thread 'main' panicked at boom\nFAIL detail\n");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_panic_capture_ignores_tracing_json() {
+        let err = run_process(
+            sh("printf \"thread 'main' panicked at boom\\n{\\\"timestamp\\\":\\\"now\\\",\\\"level\\\":\\\"INFO\\\"}\\n\" 1>&2; exit 101"),
+            |_, _| Ok(()),
+        )
+        .expect_err("panic");
+        match err {
+            ProcessError::RustPanic(text) => {
+                assert_eq!(text, "thread 'main' panicked at boom\n");
             }
             other => panic!("unexpected error: {other:?}"),
         }

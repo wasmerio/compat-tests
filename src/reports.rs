@@ -80,7 +80,7 @@ pub fn finalize_run(
         },
         "counts": counts,
         "errors": {
-            "panics": error_messages(errors),
+            "job_errors": error_messages(errors),
         },
     });
     write_json(

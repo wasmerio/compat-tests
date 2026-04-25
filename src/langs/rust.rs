@@ -1903,10 +1903,10 @@ fn rust_results(
         Ok(()) => Status::Pass,
         Err(ProcessError::Timeout(_)) => Status::Timeout,
         Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
-        Err(ProcessError::AbnormalExit) if parsed.is_empty() => {
-            return Err(anyhow!(ProcessError::AbnormalExit));
+        Err(ProcessError::AbnormalExit(message)) if parsed.is_empty() => {
+            return Err(anyhow!(ProcessError::AbnormalExit(message)));
         }
-        Err(ProcessError::AbnormalExit) => Status::Fail,
+        Err(ProcessError::AbnormalExit(_)) => Status::Fail,
         Err(ProcessError::RustPanic(message)) => {
             if parsed.is_empty() {
                 return Err(anyhow!(ProcessError::RustPanic(message)));

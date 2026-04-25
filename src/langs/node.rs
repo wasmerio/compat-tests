@@ -138,10 +138,10 @@ impl NodeRunner {
         let fallback = match result {
             Ok(()) => Status::Pass,
             Err(ProcessError::Timeout(_)) => Status::Timeout,
-            Err(ProcessError::AbnormalExit) if parsed.is_empty() => {
-                return Err(anyhow!(ProcessError::AbnormalExit));
+            Err(ProcessError::AbnormalExit(message)) if parsed.is_empty() => {
+                return Err(anyhow!(ProcessError::AbnormalExit(message)));
             }
-            Err(ProcessError::AbnormalExit) => Status::Fail,
+            Err(ProcessError::AbnormalExit(_)) => Status::Fail,
             Err(ProcessError::RustPanic(message)) => {
                 return Err(anyhow!(ProcessError::RustPanic(message)));
             }
@@ -167,6 +167,12 @@ impl NodeRunner {
                 tests: chunk.to_vec(),
             })
             .collect()
+    }
+
+    fn batch_filter(filter: &str) -> Option<usize> {
+        filter
+            .strip_prefix("node-batch-")
+            .and_then(|index| index.parse().ok())
     }
 }
 
@@ -203,6 +209,10 @@ impl LangRunner for NodeRunner {
         let tests: Vec<String> = tests.into_iter().collect();
         let jobs: Vec<TestJob> = match filter {
             None => Self::batch_jobs(tests),
+            Some(filter) if Self::batch_filter(filter).is_some() => Self::batch_jobs(tests)
+                .into_iter()
+                .filter(|job| job.id == filter)
+                .collect(),
             Some(filter) => tests
                 .into_iter()
                 .filter(|id| id == filter || id.contains(filter) || filter.contains(id.as_str()))
@@ -396,6 +406,20 @@ mod tests {
         assert_eq!(jobs[1].tests.len(), 50);
         assert_eq!(jobs[2].tests.len(), 21);
         assert_eq!(jobs[0].id, "node-batch-0000");
+    }
+
+    #[test]
+    fn node_batch_filter_selects_whole_batch() {
+        let ids: Vec<String> = (0..121).map(|i| format!("parallel/test-{i}.js")).collect();
+        let jobs = NodeRunner::batch_jobs(ids);
+        let selected: Vec<_> = jobs
+            .into_iter()
+            .filter(|job| job.id == "node-batch-0001")
+            .collect();
+        assert_eq!(NodeRunner::batch_filter("node-batch-0001"), Some(1));
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].tests.len(), 50);
+        assert_eq!(selected[0].tests[0], "parallel/test-50.js");
     }
 
     #[test]

@@ -30,6 +30,20 @@ jobs:
           sudo tar xf /opt/llvm.tar.xz --strip-components=1 -C /opt/llvm-22
           echo /opt/llvm-22/bin >> "$GITHUB_PATH"
           echo LLVM_SYS_221_PREFIX=/opt/llvm-22 >> "$GITHUB_ENV"
+      - if: matrix.lang == 'rust'
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wasix-org/cargo-wasix/releases/download/v0.1.23/cargo-wasix-installer.sh | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          cargo wasix download-toolchain
+      - id: cache-key
+        run: |
+          version="$(cargo run --quiet -- run --lang "${{ matrix.lang }}" --version)"
+          echo "key=compat-cache-${{ runner.os }}-${{ matrix.lang }}-${version}" >> "$GITHUB_OUTPUT"
+      - run: mkdir -p ".cache/${{ matrix.lang }}"
+      - uses: actions/cache@v4
+        with:
+          path: .cache/${{ matrix.lang }}
+          key: ${{ steps.cache-key.outputs.key }}
       - env:
           GH_TOKEN: ${{ github.token }}
         run: >
@@ -38,10 +52,12 @@ jobs:
           --wasmer-repo "https://github.com/${{ inputs.target_repo }}.git"
           --wasmer-ref "${{ inputs.target_sha }}"
           --compare-ref origin/main
-      - uses: actions/upload-artifact@v4
+      - if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: compat-${{ matrix.lang }}
           path: |
             status_${{ matrix.lang }}.json
             metadata_${{ matrix.lang }}.json
             test_${{ matrix.lang }}.log
+          if-no-files-found: ignore

@@ -138,10 +138,10 @@ impl PhpRunner {
         let fallback = match result {
             Ok(()) => Status::Fail,
             Err(ProcessError::Timeout(_)) => Status::Timeout,
-            Err(ProcessError::AbnormalExit) if !has_parsed_results => {
-                return Err(anyhow!(ProcessError::AbnormalExit));
+            Err(ProcessError::AbnormalExit(message)) if !has_parsed_results => {
+                return Err(anyhow!(ProcessError::AbnormalExit(message)));
             }
-            Err(ProcessError::AbnormalExit) => Status::Fail,
+            Err(ProcessError::AbnormalExit(_)) => Status::Fail,
             Err(ProcessError::RustPanic(message)) => {
                 return Err(anyhow!(ProcessError::RustPanic(message)));
             }
@@ -171,6 +171,12 @@ impl PhpRunner {
                 tests: chunk.to_vec(),
             })
             .collect()
+    }
+
+    fn batch_filter(filter: &str) -> Option<usize> {
+        filter
+            .strip_prefix("php-batch-")
+            .and_then(|index| index.parse().ok())
     }
 }
 
@@ -202,6 +208,10 @@ impl LangRunner for PhpRunner {
         tests.sort();
         let jobs: Vec<TestJob> = match filter {
             None => Self::batch_jobs(tests),
+            Some(filter) if Self::batch_filter(filter).is_some() => Self::batch_jobs(tests)
+                .into_iter()
+                .filter(|job| job.id == filter)
+                .collect(),
             Some(filter) => tests
                 .into_iter()
                 .filter(|id| id == filter || id.contains(filter) || filter.contains(id.as_str()))
@@ -620,4 +630,25 @@ function compute_summary(): void"#,
 
     fs::write(path, text)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PhpRunner;
+
+    #[test]
+    fn php_batch_filter_selects_whole_batch() {
+        let tests = (0..101)
+            .map(|index| format!("test-{index:03}.phpt"))
+            .collect();
+        let jobs = PhpRunner::batch_jobs(tests);
+        let selected: Vec<_> = jobs
+            .into_iter()
+            .filter(|job| job.id == "php-batch-0001")
+            .collect();
+        assert_eq!(PhpRunner::batch_filter("php-batch-0001"), Some(1));
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].tests.len(), 50);
+        assert_eq!(selected[0].tests[0], "test-050.phpt");
+    }
 }

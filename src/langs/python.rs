@@ -178,7 +178,7 @@ impl PythonRunner {
         }
         match result {
             Ok(()) => {}
-            Err(ProcessError::AbnormalExit) => {
+            Err(ProcessError::AbnormalExit(_)) => {
                 if names.is_empty() {
                     for id in ids {
                         names.entry(id.clone()).or_default().push(id.clone());
@@ -234,10 +234,10 @@ impl PythonRunner {
         );
         match &result {
             Ok(()) => {}
-            Err(ProcessError::AbnormalExit) if !parser.has_results() => {
-                return Err(anyhow!(ProcessError::AbnormalExit));
+            Err(ProcessError::AbnormalExit(message)) if !parser.has_results() => {
+                return Err(anyhow!(ProcessError::AbnormalExit(message.clone())));
             }
-            Err(ProcessError::AbnormalExit) => {}
+            Err(ProcessError::AbnormalExit(_)) => {}
             Err(ProcessError::Timeout(_)) => {}
             Err(ProcessError::RustPanic(message)) => {
                 return Err(anyhow!(ProcessError::RustPanic(message.clone())));
@@ -416,7 +416,7 @@ impl LangRunner for PythonRunner {
                 let status = match result {
                     Ok(()) => Status::Pass,
                     Err(ProcessError::Timeout(_)) => Status::Timeout,
-                    Err(ProcessError::AbnormalExit) => Status::Fail,
+                    Err(ProcessError::AbnormalExit(_)) => Status::Fail,
                     Err(ProcessError::RustPanic(message)) => {
                         return Err(anyhow!(ProcessError::RustPanic(message)));
                     }

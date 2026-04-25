@@ -37,6 +37,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub lang: Lang,
 
+    /// Print upstream git ref used as language cache key.
+    #[arg(long)]
+    pub version: bool,
+
     /// Optional test or module filter for a debug run.
     pub filter: Option<String>,
 
@@ -85,6 +89,17 @@ impl StatusCounts {
 }
 
 pub fn run(args: RunArgs) -> Result<()> {
+    if args.version {
+        let version = match args.lang {
+            Lang::Python => PythonRunner::OPTS.git_ref,
+            Lang::Node => NodeRunner::OPTS.git_ref,
+            Lang::Php => PhpRunner::OPTS.git_ref,
+            Lang::Rust => RustRunner::OPTS.git_ref,
+        };
+        println!("{version}");
+        return Ok(());
+    }
+
     let started_at = now_utc();
     match args.lang {
         Lang::Python => run_with_runner(args, &started_at, &PythonRunner::new())?,
@@ -356,7 +371,7 @@ fn execute_tests(
                     .collect(),
                 Some(ItemError {
                     id: job.id.clone(),
-                    message: format!("{e:#}"),
+                    message: job_error_message(runner, wasmer, job, &e),
                 }),
             ),
         };
@@ -396,6 +411,26 @@ fn execute_tests(
         counts,
         errors,
     })
+}
+
+fn job_error_message(
+    runner: &dyn LangRunner,
+    wasmer: &WasmerRuntime,
+    job: &TestJob,
+    error: &anyhow::Error,
+) -> String {
+    let mut message = format!(
+        "{error:#}\njob: {}\nrepro: cargo run -- run --lang {} --wasmer {} {}\ntests:",
+        job.id,
+        runner.opts().name,
+        wasmer.binary_path().display(),
+        job.id,
+    );
+    for test in &job.tests {
+        message.push_str("\n- ");
+        message.push_str(test);
+    }
+    message
 }
 
 fn rerun_status(
@@ -577,10 +612,12 @@ mod tests {
             &fs::read(dir.path().join("metadata_mock.json")).expect("metadata"),
         )
         .expect("parse metadata");
-        assert_eq!(
-            metadata["errors"]["panics"]["panic_g"],
-            "rust panic: fatal runtime error: stack overflow, aborting"
-        );
+        let error = metadata["errors"]["job_errors"]["panic_g"]
+            .as_str()
+            .expect("job error");
+        assert!(error.contains("rust panic: fatal runtime error: stack overflow, aborting"));
+        assert!(error.contains("repro: cargo run -- run --lang mock"));
+        assert!(error.contains("- panic_g"));
     }
 
     #[test]
@@ -588,6 +625,7 @@ mod tests {
         let report = run_with_runner(
             RunArgs {
                 lang: Lang::Python,
+                version: false,
                 filter: Some(
                     "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later".into(),
                 ),
@@ -620,6 +658,7 @@ mod tests {
         let report = run_with_runner(
             RunArgs {
                 lang: Lang::Php,
+                version: false,
                 filter: Some("tests/basic/001.phpt".into()),
                 wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
                 wasmer_repo: None,
@@ -649,6 +688,7 @@ mod tests {
         let report = run_with_runner(
             RunArgs {
                 lang: Lang::Node,
+                version: false,
                 filter: Some("parallel/test-global.js".into()),
                 wasmer: Some("/Users/fessguid/wasmer/wasmer2/target/debug/wasmer".into()),
                 wasmer_repo: None,
@@ -678,6 +718,7 @@ mod tests {
         let report = run_with_runner(
             RunArgs {
                 lang: Lang::Rust,
+                version: false,
                 filter: Some(
                     "library::alloctests::alloctests-47068aef54e24049::vec::test_append".into(),
                 ),
@@ -725,7 +766,7 @@ mod tests {
             &php as &dyn LangRunner,
             &rust as &dyn LangRunner,
         ] {
-            warmup_package(runner, &wasmer).expect(runner.opts().name);
+            warmup_package(runner, &wasmer).unwrap_or_else(|_| panic!("{}", runner.opts().name));
         }
     }
 
