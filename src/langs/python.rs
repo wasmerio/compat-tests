@@ -260,10 +260,7 @@ impl Default for PythonRunner {
 }
 
 fn worker_count(total: usize) -> usize {
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    total.max(1).min(cpus + 2)
+    total.max(1).min(num_cpus::get().saturating_add(2))
 }
 
 impl LangRunner for PythonRunner {
@@ -428,6 +425,12 @@ impl LangRunner for PythonRunner {
                 }]
             }
         })
+    }
+
+    fn thread_count_multiplier(&self) -> usize {
+        // Python modules frequently block or idle inside Wasmer, so doubling
+        // capture workers keeps progress moving without saturating CPU.
+        2
     }
 }
 

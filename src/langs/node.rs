@@ -125,7 +125,7 @@ impl NodeRunner {
                 args,
                 env: vec![],
                 cwd: workspace.checkout.clone(),
-                timeout: batch_timeout(job.tests.len()),
+                timeout: NODE_TEST_TIMEOUT,
                 log_output,
             },
             match mode {
@@ -241,10 +241,6 @@ impl LangRunner for NodeRunner {
     ) -> Result<Vec<TestResult>> {
         self.run_one(workspace, wasmer, job, mode, log)
     }
-}
-
-fn batch_timeout(tests: usize) -> Duration {
-    NODE_TEST_TIMEOUT.saturating_mul(tests.max(1) as u32 + 1)
 }
 
 fn parse_tap_results(path: &Path) -> Result<BTreeMap<String, Status>> {

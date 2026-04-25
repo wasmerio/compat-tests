@@ -9,6 +9,8 @@ Current upstreams:
 - Node.js
 - Rust
 
+Our time budget for CI runs in Github Action is max 1 hour total time, if job took longer than that - feel free to open an issue.
+
 ## Invoke in Wasmer repo
 
 In the `wasmer` repo tests run automatically if PR was created by a maintainer. For forks maintainers can request a test manually: review the PR first then write a comment `/patchsmith test [last-sha-commit-from-fork]`. That dispatches the `pr` workflow against the PR branch and posts a summary comment back on the PR with links to the workflow run and results commit.

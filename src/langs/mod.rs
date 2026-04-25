@@ -102,6 +102,12 @@ pub trait LangRunner: Send + Sync {
         mode: Mode,
         log: Option<&RunLog>,
     ) -> Result<Vec<TestResult>>;
+
+    /// Multiplies the default capture parallelism for IO-heavy runners that can
+    /// benefit from keeping more test jobs in flight than there are CPU cores.
+    fn thread_count_multiplier(&self) -> usize {
+        1
+    }
 }
 
 #[cfg(test)]
