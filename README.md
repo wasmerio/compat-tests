@@ -1,30 +1,60 @@
-# compat-tests
+# Anti-Regression Shield
 
 Runtime compatibility test harness for Wasmer using upstream language test suites.
 
-Current first backend:
+Current upstreams:
 
-- Python / upstream CPython tests
+- Python
+- PHP
+- Node.js
+- Rust
 
 ## Invoke in Wasmer repo
 
-In the `wasmer` repo, you can trigger this from a PR by commenting `/patchsmith test`. That dispatches the compat-tests workflow against the PR branch and posts a summary comment back on the PR with links to the workflow run and results commit.
+In the `wasmer` repo tests run automatically if PR was created by a maintainer. For forks maintainers can request a test manually: review the PR first then write a comment `/patchsmith test [last-sha-commit-from-fork]`. That dispatches the `pr` workflow against the PR branch and posts a summary comment back on the PR with links to the workflow run and results commit.
+
+Specifying the SHA is a security measure to ensure tests run exactly what maintainers reviewed.
 
 ## Run locally
+
 For local development, the fastest path is to reuse your own Wasmer binary directly:
 
 ```bash
-python3 main.py run-python --wasmer-bin ~/wasmer/wasmer/target/debug/wasmer
+cargo run -- run --lang python --wasmer ~/wasmer/wasmer2/target/debug/wasmer 
 ```
 
-That runs the full Python upstream suite and updates [status.json](~/wasmer/compat-tests/status.json) and [metadata.json](~/wasmer/compat-tests/metadata.json), so you can inspect the diff and see the impact of your Wasmer changes before you commit anything in the main repo.
+Available languages: `python`, `php`, `node`, or `rust`.
+
 
 ## Debug one specific test
 
-For quick investigation of one test, use debug mode:
+Pass a filter after the command args:
 
 ```bash
-python3 main.py run-python --wasmer-bin ~/wasmer/wasmer/target/debug/wasmer --debug-test test.test_posixpath.PosixPathTest.test_islink
+cargo run -- run --lang python --wasmer ~/wasmer/wasmer2/target/debug/wasmer \
+  test.test_posixpath.PosixPathTest.test_islink
 ```
 
-Debug mode prints the raw test output and exits with the test status, but it does not update `status.json` or `metadata.json`.
+Debug mode prints the raw test output and does not update the status/metadata files.
+
+## Development
+
+The first local run is expensive. Upstream checkouts live under `.work/`, and reusable generated data lives under `.cache/`.
+
+To prepare the heavy dependencies and caches:
+
+```bash
+WASMER_BINARY=~/wasmer/target/debug/wasmer cargo test test_dependencies --ignored
+```
+
+That helper clones all four upstreams, warms the Wasmer packages, and runs Rust discovery. Rust discovery is intentionally heavy: it builds Rust test harnesses to wasm, precompiles wasm with Wasmer, lists tests, and writes caches under `.cache/rust`. This is the slow path we want to pay once, not on every local run.
+
+The normal run path also caches discovered tests in `.cache/<lang>/tests.json`.
+
+## About the code
+
+This project was vibe coded and it looks like it. There are hacks, patches, wrappers, and language-specific weirdness because the job is to make big upstream test suites run inside Wasmer, not to build a beautiful generic test framework.
+
+That is fine for this repo.
+
+The goal is not 100% upstream tests passing, and not even 100% upstream tests running. The goal is broad useful coverage and a stable signal: if something worked before, we want to know when it breaks.

@@ -756,9 +756,27 @@ mod tests {
             &rust as &dyn LangRunner,
         ] {
             let opts = runner.opts();
-            ensure_checkout(&work_root.join(opts.name), opts.git_repo, opts.git_ref)
-                .expect("checkout");
+            let work_dir = work_root.join(opts.name);
+            let checkout =
+                ensure_checkout(&work_dir, opts.git_repo, opts.git_ref).expect("checkout");
+            let workspace = Workspace {
+                output_dir: output_dir.clone(),
+                checkout,
+                work_dir,
+            };
             warmup_package(runner, &wasmer).expect("warmup");
+            if opts.name == RustRunner::OPTS.name {
+                let jobs = runner
+                    .discover(&workspace, &wasmer, None, Mode::Capture)
+                    .expect("rust discovery");
+                let cache_path = output_dir.join(".cache").join(opts.name).join("tests.json");
+                fs::create_dir_all(cache_path.parent().expect("cache parent")).expect("cache dir");
+                fs::write(
+                    cache_path,
+                    serde_json::to_vec_pretty(&jobs).expect("serialize rust tests"),
+                )
+                .expect("write rust tests cache");
+            }
         }
     }
 }
