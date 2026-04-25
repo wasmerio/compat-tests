@@ -29,7 +29,7 @@ struct Cli {
 enum Command {
     /// Run the upstream test suite for a language.
     Run(RunArgs),
-    /// Commit status_*.json and metadata_*.json into the named baseline branch.
+    /// Commit tests_*_results.json and tests_*_summary.json into the named baseline branch.
     #[command(name = "update-baseline")]
     UpdateBaseline(UpdateBaselineArgs),
     /// Render the PR comment body from comparison + metadata.

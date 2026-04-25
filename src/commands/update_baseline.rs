@@ -73,8 +73,8 @@ fn is_baseline_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| {
-            (name.starts_with("status_") || name.starts_with("metadata_"))
-                && name.ends_with(".json")
+            name.starts_with("tests_")
+                && (name.ends_with("_results.json") || name.ends_with("_summary.json"))
         })
 }
 
@@ -90,7 +90,7 @@ fn copy_files(source_dir: &Path, files: &[String]) -> Result<()> {
 fn commit_message(source_dir: &Path, files: &[String]) -> Result<String> {
     let metadata = files
         .iter()
-        .find(|file| file.contains("metadata_"))
+        .find(|file| file.ends_with("_summary.json"))
         .ok_or_else(|| anyhow::anyhow!("no metadata file found"))?;
     let metadata_path = source_dir.join(metadata);
     let metadata = load_metadata(&metadata_path)

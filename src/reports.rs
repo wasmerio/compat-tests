@@ -38,7 +38,6 @@ pub struct WasmerMeta {
 
 pub struct RunConfig<'a> {
     pub timeout: Duration,
-    pub filter: Option<&'a str>,
     pub runner_name: &'a str,
     pub runner_commit: &'a str,
     pub started_at: &'a str,
@@ -59,7 +58,7 @@ pub fn finalize_run(
     write_json(
         &workspace
             .output_dir
-            .join(status_filename(config.runner_name)),
+            .join(test_results_filename(config.runner_name)),
         &status,
     )?;
 
@@ -87,19 +86,19 @@ pub fn finalize_run(
     write_json(
         &workspace
             .output_dir
-            .join(metadata_filename(config.runner_name)),
+            .join(test_summary_filename(config.runner_name)),
         &metadata,
     )?;
     tracing::info!(counts = ?counts, errors = errors.len(), "done");
     Ok(())
 }
 
-pub fn status_filename(runner_name: &str) -> String {
-    format!("status_{runner_name}.json")
+pub fn test_results_filename(runner_name: &str) -> String {
+    format!("tests_{runner_name}_results.json")
 }
 
-pub fn metadata_filename(runner_name: &str) -> String {
-    format!("metadata_{runner_name}.json")
+pub fn test_summary_filename(runner_name: &str) -> String {
+    format!("tests_{runner_name}_summary.json")
 }
 
 pub fn load_baseline_status(
@@ -125,7 +124,7 @@ pub fn load_status_at_ref(
     Ok(file_json::<BTreeMap<String, Status>>(
         output_dir,
         compare_ref,
-        &status_filename(runner_name),
+        &test_results_filename(runner_name),
     )?
     .unwrap_or_default())
 }
@@ -143,7 +142,7 @@ pub fn load_metadata_at_ref(
         return Ok(RunMetadata::default());
     }
     Ok(
-        file_json::<RunMetadata>(output_dir, compare_ref, &metadata_filename(runner_name))?
+        file_json::<RunMetadata>(output_dir, compare_ref, &test_summary_filename(runner_name))?
             .unwrap_or_default(),
     )
 }

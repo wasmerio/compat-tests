@@ -192,7 +192,6 @@ fn run_with_runner(
         &report.errors,
         RunConfig {
             timeout: args.timeout,
-            filter: args.filter.as_deref(),
             runner_name: opts.name,
             runner_commit: opts.git_ref,
             started_at,
@@ -492,6 +491,7 @@ mod tests {
     use super::*;
     use crate::git::ensure_checkout;
     use crate::langs::tests::MockRunner;
+    use crate::reports::{test_results_filename, test_summary_filename};
     use crate::runtime::RuntimeSource;
     use tempdir::TempDir;
 
@@ -611,7 +611,6 @@ mod tests {
             &report.errors,
             RunConfig {
                 timeout: Duration::from_secs(30),
-                filter: None,
                 runner_name: MockRunner::OPTS.name,
                 runner_commit: MockRunner::OPTS.git_ref,
                 started_at: "1970-01-01T00:00:00Z",
@@ -620,14 +619,15 @@ mod tests {
         )
         .expect("finalize");
 
-        let status: BTreeMap<String, Status> =
-            serde_json::from_slice(&fs::read(dir.path().join("status_mock.json")).expect("status"))
-                .expect("parse status");
+        let status: BTreeMap<String, Status> = serde_json::from_slice(
+            &fs::read(dir.path().join(test_results_filename("mock"))).expect("status"),
+        )
+        .expect("parse status");
         assert_eq!(status["pass_a"], Status::Pass);
         assert_eq!(status["panic_g"], Status::Fail);
 
         let metadata: serde_json::Value = serde_json::from_slice(
-            &fs::read(dir.path().join("metadata_mock.json")).expect("metadata"),
+            &fs::read(dir.path().join(test_summary_filename("mock"))).expect("metadata"),
         )
         .expect("parse metadata");
         let error = metadata["crashes"]["panic_g"].as_str().expect("job crash");

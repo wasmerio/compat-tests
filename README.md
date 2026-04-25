@@ -37,7 +37,7 @@ cargo run -- run --lang python --wasmer ~/wasmer/wasmer2/target/debug/wasmer \
   test.test_posixpath.PosixPathTest.test_islink
 ```
 
-Debug mode prints the raw test output and does not update the status/metadata files.
+Debug mode prints the raw test output and does not update the test results/summary files.
 
 ## Development
 

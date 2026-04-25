@@ -7,7 +7,7 @@ use anyhow::{Result, bail};
 use crate::langs::Status;
 use crate::reports::{
     RunMetadata, load_metadata, load_metadata_at_ref, load_status, load_status_at_ref,
-    metadata_filename, status_filename,
+    test_results_filename, test_summary_filename,
 };
 
 const COMPARE_REF: &str = "origin/main";
@@ -109,8 +109,8 @@ fn collect_language_verdict(
     config: LangConfig,
     target_sha: &str,
 ) -> Result<LanguageVerdict> {
-    let metadata_path = output_dir.join(metadata_filename(config.name));
-    let status_path = output_dir.join(status_filename(config.name));
+    let metadata_path = output_dir.join(test_summary_filename(config.name));
+    let status_path = output_dir.join(test_results_filename(config.name));
     let metadata = load_metadata(&metadata_path)?;
     ensure_target_sha(config.name, &metadata, target_sha)?;
     let status = load_status(&status_path)?;
@@ -230,9 +230,27 @@ fn render_verdict(
 ) -> String {
     let mut body = String::new();
     match kind {
-        VerdictKind::Regression => render_regression(&mut body, languages, run_url, results_branch, results_commit),
-        VerdictKind::Improvement => render_improvement(&mut body, languages, run_url, results_branch, results_commit),
-        VerdictKind::NoChanges => render_no_changes(&mut body, languages, run_url, results_branch, results_commit),
+        VerdictKind::Regression => render_regression(
+            &mut body,
+            languages,
+            run_url,
+            results_branch,
+            results_commit,
+        ),
+        VerdictKind::Improvement => render_improvement(
+            &mut body,
+            languages,
+            run_url,
+            results_branch,
+            results_commit,
+        ),
+        VerdictKind::NoChanges => render_no_changes(
+            &mut body,
+            languages,
+            run_url,
+            results_branch,
+            results_commit,
+        ),
     }
     body
 }
@@ -257,14 +275,18 @@ fn render_regression(
                 let _ = writeln!(body, "- Repro command: `{repro}`");
             }
             if let Some(source) = &crash.test_source {
-                let _ = writeln!(body, "- Test source: {}", markdown_link(&source.label, &source.url));
+                let _ = writeln!(
+                    body,
+                    "- Test source: {}",
+                    markdown_link(&source.label, &source.url)
+                );
             }
             let _ = writeln!(
                 body,
                 "- Full status file: {}",
                 markdown_link(
-                    &status_filename(lang.config.name),
-                    &status_url(lang.config.name, results_branch, results_commit)
+                    &test_results_filename(lang.config.name),
+                    &test_results_url(lang.config.name, results_branch, results_commit)
                 )
             );
             if let Some(output) = &crash.output {
@@ -285,7 +307,11 @@ fn render_regression(
                 let _ = writeln!(body, "- Repro command: `{repro}`");
             }
             if let Some(source) = &example.test_source {
-                let _ = writeln!(body, "- Test source: {}", markdown_link(&source.label, &source.url));
+                let _ = writeln!(
+                    body,
+                    "- Test source: {}",
+                    markdown_link(&source.label, &source.url)
+                );
             }
             let _ = writeln!(
                 body,
@@ -296,8 +322,8 @@ fn render_regression(
                 body,
                 "- Full status file: {}",
                 markdown_link(
-                    &status_filename(lang.config.name),
-                    &status_url(lang.config.name, results_branch, results_commit)
+                    &test_results_filename(lang.config.name),
+                    &test_results_url(lang.config.name, results_branch, results_commit)
                 )
             );
             if let Some(output) = &example.output {
@@ -326,13 +352,16 @@ fn render_improvement(
     render_table(body, languages);
     let _ = writeln!(body);
 
-    for lang in languages.iter().filter(|lang| !lang.improvements.is_empty()) {
+    for lang in languages
+        .iter()
+        .filter(|lang| !lang.improvements.is_empty())
+    {
         let _ = writeln!(
             body,
             "- Examples from {}:",
             markdown_link(
-                &status_filename(lang.config.name),
-                &status_url(lang.config.name, results_branch, results_commit)
+                &test_results_filename(lang.config.name),
+                &test_results_url(lang.config.name, results_branch, results_commit)
             )
         );
         for change in lang.improvements.iter().take(5) {
@@ -401,8 +430,8 @@ fn render_more_changed_tests(
             "- {}: {}",
             lang.config.label,
             markdown_link(
-                &status_filename(lang.config.name),
-                &status_url(lang.config.name, results_branch, results_commit)
+                &test_results_filename(lang.config.name),
+                &test_results_url(lang.config.name, results_branch, results_commit)
             )
         );
     }
@@ -412,7 +441,10 @@ fn render_install(body: &mut String) {
     let _ = writeln!(body);
     let _ = writeln!(body, "## Install shield");
     let _ = writeln!(body);
-    let _ = writeln!(body, "- `git clone https://github.com/wasmerio/compat-tests.git`");
+    let _ = writeln!(
+        body,
+        "- `git clone https://github.com/wasmerio/compat-tests.git`"
+    );
     let _ = writeln!(body, "- `cd compat-tests`");
     let _ = writeln!(body, "- `cargo build`");
     let _ = writeln!(
@@ -421,12 +453,7 @@ fn render_install(body: &mut String) {
     );
 }
 
-fn render_artifacts(
-    body: &mut String,
-    run_url: &str,
-    results_branch: &str,
-    results_commit: &str,
-) {
+fn render_artifacts(body: &mut String, run_url: &str, results_branch: &str, results_commit: &str) {
     let _ = writeln!(body);
     let _ = writeln!(body, "## Artifacts");
     let _ = writeln!(body);
@@ -440,16 +467,16 @@ fn render_artifacts(
     }
 }
 
-fn status_url(lang: &str, results_branch: &str, results_commit: &str) -> String {
+fn test_results_url(lang: &str, results_branch: &str, results_commit: &str) -> String {
     if !results_commit.is_empty() {
         format!(
             "https://github.com/wasmerio/compat-tests/blob/{results_commit}/{}",
-            status_filename(lang)
+            test_results_filename(lang)
         )
     } else {
         format!(
             "https://github.com/wasmerio/compat-tests/blob/{results_branch}/{}",
-            status_filename(lang)
+            test_results_filename(lang)
         )
     }
 }
@@ -615,14 +642,26 @@ mod tests {
                 delta_timeout: 0,
                 delta_crash: 0,
                 improvements: vec![
-                    change("ext/standard/tests/strings/trim_basic.phpt", Status::Fail, Status::Pass),
-                    change("ext/standard/tests/strings/strval_basic.phpt", Status::Fail, Status::Pass),
+                    change(
+                        "ext/standard/tests/strings/trim_basic.phpt",
+                        Status::Fail,
+                        Status::Pass,
+                    ),
+                    change(
+                        "ext/standard/tests/strings/strval_basic.phpt",
+                        Status::Fail,
+                        Status::Pass,
+                    ),
                     change(
                         "ext/standard/tests/file/stream_copy_to_stream_empty.phpt",
                         Status::Fail,
                         Status::Pass,
                     ),
-                    change("ext/standard/tests/file/statpage.phpt", Status::Timeout, Status::Pass),
+                    change(
+                        "ext/standard/tests/file/statpage.phpt",
+                        Status::Timeout,
+                        Status::Pass,
+                    ),
                     change(
                         "ext/standard/tests/file/stream_supports_lock.phpt",
                         Status::Fail,
@@ -642,7 +681,11 @@ mod tests {
                 delta_timeout: 0,
                 delta_crash: 0,
                 improvements: vec![
-                    change("env::home_dir_with_relative_input", Status::Fail, Status::Pass),
+                    change(
+                        "env::home_dir_with_relative_input",
+                        Status::Fail,
+                        Status::Pass,
+                    ),
                     change(
                         "fs::canonicalize_handles_symlink_loop",
                         Status::Fail,
@@ -654,7 +697,11 @@ mod tests {
                         Status::Pass,
                     ),
                     change("net::tcp_listener_reuseaddr", Status::Fail, Status::Pass),
-                    change("path::strip_prefix_handles_root", Status::Fail, Status::Pass),
+                    change(
+                        "path::strip_prefix_handles_root",
+                        Status::Fail,
+                        Status::Pass,
+                    ),
                 ],
                 regressions: vec![],
                 crash_example: None,

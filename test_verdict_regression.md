@@ -11,7 +11,7 @@
 
 - Repro command: `shield run --lang php --wasmer [WASMER BINARY] php-batch-0316`
 - Test source: [rename_variation5.phpt](https://github.com/php/php-src/blob/master/ext/standard/tests/file/rename_variation5.phpt)
-- Full status file: [status_php.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/status_php.json)
+- Full status file: [tests_php_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_php_results.json)
 
 ```text
 rust panic: thread 'TokioTaskManager Thread Pool_thread_6' panicked at
@@ -36,7 +36,7 @@ job: php-batch-0316
 - Repro command: `shield run --lang python --wasmer [WASMER BINARY] test.test_shutil.TestMove.test_move_symlink_to_file`
 - Test source: [test_shutil.py](https://github.com/python/cpython/blob/main/Lib/test/test_shutil.py)
 - Status: `PASS -> FAIL`
-- Full status file: [status_python.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/status_python.json)
+- Full status file: [tests_python_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_python_results.json)
 
 ```text
 ======================================================================
@@ -53,7 +53,7 @@ AssertionError: False is not true
 - Repro command: `shield run --lang node --wasmer [WASMER BINARY] parallel/test-fs-symlink.js`
 - Test source: [test-fs-symlink.js](https://github.com/nodejs/node/blob/main/test/parallel/test-fs-symlink.js)
 - Status: `PASS -> FAIL`
-- Full status file: [status_node.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/status_node.json)
+- Full status file: [tests_node_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_node_results.json)
 
 ```text
 AssertionError [ERR_ASSERTION]: expected symbolic link to exist
@@ -63,10 +63,10 @@ AssertionError [ERR_ASSERTION]: expected symbolic link to exist
 
 ### More changed tests
 
-- Python: [status_python.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/status_python.json)
-- Node.js: [status_node.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/status_node.json)
-- PHP: [status_php.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/status_php.json)
-- Rust: [status_rust.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/status_rust.json)
+- Python: [tests_python_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_python_results.json)
+- Node.js: [tests_node_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_node_results.json)
+- PHP: [tests_php_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_php_results.json)
+- Rust: [tests_rust_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_rust_results.json)
 
 ## Install shield
 

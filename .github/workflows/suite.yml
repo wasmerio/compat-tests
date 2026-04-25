@@ -62,7 +62,7 @@ jobs:
         with:
           name: compat-${{ matrix.lang }}
           path: |
-            status_${{ matrix.lang }}.json
-            metadata_${{ matrix.lang }}.json
+            tests_${{ matrix.lang }}_results.json
+            tests_${{ matrix.lang }}_summary.json
             test_${{ matrix.lang }}.log
           if-no-files-found: ignore
