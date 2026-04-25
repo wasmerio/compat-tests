@@ -121,7 +121,7 @@ impl WasmerRuntime {
                             "-p",
                             "wasmer-cli",
                             "--features",
-                            "llvm",
+                            "llvm,napi-v8",
                             "--release",
                         ])
                         .current_dir(&checkout),

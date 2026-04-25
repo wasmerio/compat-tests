@@ -34,7 +34,10 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf https://github.com/wasix-org/cargo-wasix/releases/download/v0.1.23/cargo-wasix-installer.sh | sh
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          cargo wasix download-toolchain "$(cargo run --quiet -- run --lang rust --version)"
+          wasix_toolchain="$(cargo run --quiet -- run --lang rust --version)"
+          test -n "$wasix_toolchain"
+          echo "Installing WASIX toolchain $wasix_toolchain"
+          cargo wasix download-toolchain "$wasix_toolchain"
       - id: cache-key
         run: |
           version="$(cargo run --quiet -- run --lang "${{ matrix.lang }}" --version)"
