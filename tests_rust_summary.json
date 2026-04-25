@@ -1,0 +1,27 @@
+{
+  "config": {
+    "timeout_seconds": 600
+  },
+  "counts": {
+    "FAIL": 1037,
+    "FLAKY": 0,
+    "PASS": 20809,
+    "SKIP": 43,
+    "TIMEOUT": 0
+  },
+  "crashes": {
+    "root::linkchecker::checks-923f308bfce633e2": "process exited abnormally: exit status: 27\njob: root::linkchecker::checks-923f308bfce633e2\ntests:\n- root::linkchecker::checks-923f308bfce633e2::basic_broken\n- root::linkchecker::checks-923f308bfce633e2::broken_fragment_local\n- root::linkchecker::checks-923f308bfce633e2::broken_fragment_remote\n- root::linkchecker::checks-923f308bfce633e2::broken_intra_doc_link\n- root::linkchecker::checks-923f308bfce633e2::broken_redir\n- root::linkchecker::checks-923f308bfce633e2::directory_link\n- root::linkchecker::checks-923f308bfce633e2::redirect_loop\n- root::linkchecker::checks-923f308bfce633e2::valid"
+  },
+  "run": {
+    "finished_at": "2026-04-25T18:12:11Z",
+    "started_at": "2026-04-25T17:19:19Z"
+  },
+  "rust": {
+    "commit": "v2025-11-07.1+rust-1.90"
+  },
+  "wasmer": {
+    "commit": "7cf429d0ebf482c847608c7dd5ce0da8627eeeac",
+    "ref": "main",
+    "repo": "https://github.com/wasmerio/wasmer.git"
+  }
+}
