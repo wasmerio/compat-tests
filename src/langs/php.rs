@@ -134,10 +134,17 @@ impl PhpRunner {
         );
 
         let parsed = Self::parse_results(&workspace.checkout, &result_file)?;
+        let has_parsed_results = !parsed.is_empty();
         let fallback = match result {
             Ok(()) => Status::Fail,
             Err(ProcessError::Timeout(_)) => Status::Timeout,
-            Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => Status::Fail,
+            Err(ProcessError::AbnormalExit) if !has_parsed_results => {
+                return Err(anyhow!(ProcessError::AbnormalExit));
+            }
+            Err(ProcessError::AbnormalExit) => Status::Fail,
+            Err(ProcessError::RustPanic(message)) => {
+                return Err(anyhow!(ProcessError::RustPanic(message)));
+            }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
         };
         let mut by_id = BTreeMap::new();

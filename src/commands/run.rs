@@ -335,52 +335,58 @@ fn execute_tests(
     runner.prepare(workspace, wasmer, &jobs)?;
     let total_tests: usize = jobs.iter().map(|job| job.tests.len()).sum();
     let completed_tests = AtomicUsize::new(0);
-    let run_one = |job: &TestJob| -> Result<Vec<TestResult>, ItemError> {
+    let run_one = |job: &TestJob| -> (Vec<TestResult>, Option<ItemError>) {
         if matches!(mode, Mode::Debug) {
             println!("\n=== {} ===", job.id);
         }
         if matches!(mode, Mode::Capture) {
             tracing::info!(job = job.id, tests = job.tests.len(), "running test job");
         }
-        let outcome = runner
-            .run_test(workspace, wasmer, job, mode, log)
-            .map_err(|e| ItemError {
-                id: job.id.clone(),
-                message: format!("{e:#}"),
-            });
+        let (results, error) = match runner.run_test(workspace, wasmer, job, mode, log) {
+            Ok(results) => (results, None),
+            Err(e) => (
+                job.tests
+                    .iter()
+                    .map(|id| TestResult {
+                        id: id.clone(),
+                        status: Status::Fail,
+                    })
+                    .collect(),
+                Some(ItemError {
+                    id: job.id.clone(),
+                    message: format!("{e:#}"),
+                }),
+            ),
+        };
         if matches!(mode, Mode::Capture) {
-            if let Ok(results) = &outcome {
-                for result in results {
-                    let completed = completed_tests.fetch_add(1, Ordering::Relaxed) + 1;
-                    tracing::info!(
-                        completed,
-                        total = total_tests,
-                        remaining = total_tests.saturating_sub(completed),
-                        test = result.id,
-                        status = %result.status,
-                        "test result"
-                    );
-                }
+            for result in &results {
+                let completed = completed_tests.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::info!(
+                    completed,
+                    total = total_tests,
+                    remaining = total_tests.saturating_sub(completed),
+                    test = result.id,
+                    status = %result.status,
+                    "test result"
+                );
             }
         }
-        outcome
+        (results, error)
     };
-    let outcomes: Vec<Result<Vec<TestResult>, ItemError>> = match mode {
+    let outcomes: Vec<(Vec<TestResult>, Option<ItemError>)> = match mode {
         Mode::Capture => jobs.par_iter().map(run_one).collect(),
         Mode::Debug => jobs.iter().map(run_one).collect(),
     };
     let mut results = Vec::new();
     let mut errors = Vec::new();
     let mut counts = StatusCounts(HashMap::new());
-    for outcome in outcomes {
-        match outcome {
-            Ok(tests) => {
-                for r in tests {
-                    counts.increment(r.status);
-                    results.push(r);
-                }
-            }
-            Err(e) => errors.push(e),
+    for (tests, error) in outcomes {
+        for r in tests {
+            counts.increment(r.status);
+            results.push(r);
+        }
+        if let Some(error) = error {
+            errors.push(error);
         }
     }
     Ok(ExecutionReport {
@@ -498,6 +504,78 @@ mod tests {
                 ])),
                 errors: vec![],
             }
+        );
+    }
+
+    #[test]
+    fn mock_runner_panic_is_written_to_metadata() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dir = TempDir::new("shield-run").expect("tempdir");
+        let workspace = Workspace {
+            output_dir: dir.path().to_path_buf(),
+            checkout: cwd,
+            work_dir: dir.path().to_path_buf(),
+        };
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("wasmer".into()),
+            dir.path(),
+            Duration::ZERO,
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
+        let report = execute_tests(
+            &MockRunner,
+            &workspace,
+            &wasmer.runtime,
+            None,
+            Some("panic"),
+            Mode::Capture,
+        )
+        .expect("execute_tests should succeed");
+
+        assert_eq!(
+            report.results,
+            vec![
+                TestResult {
+                    id: "pass_a".into(),
+                    status: Status::Pass,
+                },
+                TestResult {
+                    id: "panic_g".into(),
+                    status: Status::Fail,
+                }
+            ]
+        );
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.errors[0].message.contains("stack overflow"));
+
+        finalize_run(
+            &workspace,
+            &wasmer.identity,
+            Duration::from_secs(30),
+            None,
+            MockRunner::OPTS.name,
+            MockRunner::OPTS.git_ref,
+            "1970-01-01T00:00:00Z",
+            results_by_id(&report.results),
+            0,
+            &report.errors,
+        )
+        .expect("finalize");
+
+        let status: BTreeMap<String, Status> =
+            serde_json::from_slice(&fs::read(dir.path().join("status_mock.json")).expect("status"))
+                .expect("parse status");
+        assert_eq!(status["pass_a"], Status::Pass);
+        assert_eq!(status["panic_g"], Status::Fail);
+
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &fs::read(dir.path().join("metadata_mock.json")).expect("metadata"),
+        )
+        .expect("parse metadata");
+        assert_eq!(
+            metadata["errors"]["panics"]["panic_g"],
+            "rust panic: fatal runtime error: stack overflow, aborting"
         );
     }
 

@@ -178,12 +178,15 @@ impl PythonRunner {
         }
         match result {
             Ok(()) => {}
-            Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
+            Err(ProcessError::AbnormalExit) => {
                 if names.is_empty() {
                     for id in ids {
                         names.entry(id.clone()).or_default().push(id.clone());
                     }
                 }
+            }
+            Err(ProcessError::RustPanic(message)) => {
+                return Err(anyhow!(ProcessError::RustPanic(message)));
             }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
             Err(ProcessError::Timeout(_)) => unreachable!(),
@@ -230,8 +233,15 @@ impl PythonRunner {
             },
         );
         match &result {
-            Ok(()) | Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {}
+            Ok(()) => {}
+            Err(ProcessError::AbnormalExit) if !parser.has_results() => {
+                return Err(anyhow!(ProcessError::AbnormalExit));
+            }
+            Err(ProcessError::AbnormalExit) => {}
             Err(ProcessError::Timeout(_)) => {}
+            Err(ProcessError::RustPanic(message)) => {
+                return Err(anyhow!(ProcessError::RustPanic(message.clone())));
+            }
             Err(ProcessError::Spawn(message)) => return Err(anyhow!(message.clone())),
         }
         Ok(reconcile_module_results(
@@ -406,8 +416,9 @@ impl LangRunner for PythonRunner {
                 let status = match result {
                     Ok(()) => Status::Pass,
                     Err(ProcessError::Timeout(_)) => Status::Timeout,
-                    Err(ProcessError::AbnormalExit(_)) | Err(ProcessError::RustPanic(_)) => {
-                        Status::Fail
+                    Err(ProcessError::AbnormalExit) => Status::Fail,
+                    Err(ProcessError::RustPanic(message)) => {
+                        return Err(anyhow!(ProcessError::RustPanic(message)));
                     }
                     Err(ProcessError::Spawn(message)) => return Err(anyhow!(message)),
                 };
@@ -469,22 +480,6 @@ fn resolve_guest_test_dir(wasmer: &WasmerRuntime) -> Result<String> {
         );
     }
     Ok(dir.to_string())
-}
-
-fn parse_debug_status(output: &str, result: &std::result::Result<(), ProcessError>) -> Status {
-    if matches!(result, Err(ProcessError::Timeout(_))) {
-        return Status::Timeout;
-    }
-    if output.contains("... skipped ") {
-        return Status::Skip;
-    }
-    if output.lines().any(|line| line.starts_with("OK")) && result.is_ok() {
-        return Status::Pass;
-    }
-    if output.lines().any(|line| line.starts_with("FAILED (")) || result.is_err() {
-        return Status::Fail;
-    }
-    Status::Timeout
 }
 
 fn reconcile_module_results(
@@ -609,6 +604,11 @@ struct PythonProtocol {
 }
 
 impl PythonProtocol {
+    fn has_results(&self) -> bool {
+        !self.cases.is_empty() || !self.statuses.is_empty()
+    }
+
+    #[cfg(test)]
     fn feed(&mut self, chunk: &[u8]) {
         self.pending.push_str(&String::from_utf8_lossy(chunk));
         while let Some(idx) = self.pending.find('\n') {
@@ -805,27 +805,6 @@ PASS mod.A
                 id: "test.test_foo".into(),
                 status: Status::Timeout
             }],
-        );
-    }
-
-    #[test]
-    fn debug_status_detects_skip() {
-        assert_eq!(
-            parse_debug_status("test_x ... skipped 'nope'\n", &Ok(())),
-            Status::Skip
-        );
-    }
-
-    #[test]
-    fn debug_status_detects_pass() {
-        assert_eq!(parse_debug_status("...\nOK\n", &Ok(())), Status::Pass);
-    }
-
-    #[test]
-    fn debug_status_detects_timeout() {
-        assert_eq!(
-            parse_debug_status("", &Err(ProcessError::Timeout("timeout".into()))),
-            Status::Timeout
         );
     }
 

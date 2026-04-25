@@ -38,14 +38,25 @@ pub enum ProcessError {
     /// Process exited with Rust panic in the output
     RustPanic(String),
     /// Process exited with non 0 exit code
-    AbnormalExit(String),
+    AbnormalExit,
+}
+
+impl std::fmt::Display for ProcessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProcessError::Spawn(message) => write!(f, "spawn failed: {message}"),
+            ProcessError::Timeout(message) => f.write_str(message),
+            ProcessError::RustPanic(message) => write!(f, "rust panic: {message}"),
+            ProcessError::AbnormalExit => f.write_str("process exited abnormally"),
+        }
+    }
 }
 
 enum ProcessEvent {
     /// A single line emitted by stdout or stderr
     Line(Stream, String),
     /// Failed to read from stdout or stderr
-    ReadError(Stream, String),
+    ReadError,
     /// One stream reached EOF
     Closed,
 }
@@ -111,8 +122,8 @@ where
                             let _ = child.kill();
                             state.timed_out = true;
                         }
-                        Err(e) => {
-                            abort = Some(ProcessError::AbnormalExit(format!("wait failed: {e}")));
+                        Err(_) => {
+                            abort = Some(ProcessError::AbnormalExit);
                             break;
                         }
                     }
@@ -121,9 +132,7 @@ where
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-    let status = child
-        .wait()
-        .map_err(|e| ProcessError::AbnormalExit(format!("wait failed: {e}")))?;
+    let status = child.wait().map_err(|_| ProcessError::AbnormalExit)?;
     join_reader(stdout_handle)?;
     join_reader(stderr_handle)?;
     if let Some(err) = abort {
@@ -138,16 +147,10 @@ where
     if status.success() {
         return Ok(());
     }
-    let details = format!(
-        "exit {}",
-        status
-            .code()
-            .map_or("signal".to_string(), |n| n.to_string())
-    );
     if let Some(capture) = state.panic_capture {
         Err(ProcessError::RustPanic(capture))
     } else {
-        Err(ProcessError::AbnormalExit(details))
+        Err(ProcessError::AbnormalExit)
     }
 }
 
@@ -173,10 +176,7 @@ where
 {
     match event {
         ProcessEvent::Line(stream, line) => handle_line(state, log_output, on_line, stream, line),
-        ProcessEvent::ReadError(stream, message) => Err(ProcessError::AbnormalExit(format!(
-            "{} read failed: {message}",
-            stream_name(stream)
-        ))),
+        ProcessEvent::ReadError => Err(ProcessError::AbnormalExit),
         ProcessEvent::Closed => {
             state.open_streams -= 1;
             Ok(())
@@ -203,9 +203,8 @@ where
     }
     log_output
         .write_line(stream_name(stream), &line)
-        .map_err(|e| ProcessError::AbnormalExit(format!("log write failed: {e:#}")))?;
-    on_line(stream, &line)
-        .map_err(|e| ProcessError::AbnormalExit(format!("line handler failed: {e:#}")))?;
+        .map_err(|_| ProcessError::AbnormalExit)?;
+    on_line(stream, &line).map_err(|_| ProcessError::AbnormalExit)?;
     Ok(())
 }
 
@@ -243,8 +242,8 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
                         return;
                     }
                 }
-                Err(e) => {
-                    let _ = tx.send(ProcessEvent::ReadError(stream, e.to_string()));
+                Err(_) => {
+                    let _ = tx.send(ProcessEvent::ReadError);
                     let _ = tx.send(ProcessEvent::Closed);
                     return;
                 }
@@ -255,9 +254,7 @@ fn spawn_reader<R: std::io::Read + Send + 'static>(
 }
 
 fn join_reader(handle: thread::JoinHandle<()>) -> std::result::Result<(), ProcessError> {
-    handle
-        .join()
-        .map_err(|_| ProcessError::AbnormalExit("reader thread panicked".to_string()))
+    handle.join().map_err(|_| ProcessError::AbnormalExit)
 }
 
 pub fn run_command(cmd: &mut Command) -> Result<()> {
@@ -385,6 +382,22 @@ mod tests {
         match err {
             ProcessError::RustPanic(text) => {
                 assert_eq!(text, "thread 'main' panicked at boom\nnext\n")
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_detects_stack_overflow_runtime_abort() {
+        let err = run_process(
+            sh("printf \"thread '<unknown>' has overflowed its stack\\nfatal runtime error: stack overflow, aborting\\n\" 1>&2; exit 134"),
+            |_, _| Ok(()),
+        )
+        .expect_err("panic");
+        match err {
+            ProcessError::RustPanic(text) => {
+                assert!(text.contains("has overflowed its stack"));
+                assert!(text.contains("fatal runtime error: stack overflow"));
             }
             other => panic!("unexpected error: {other:?}"),
         }

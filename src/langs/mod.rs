@@ -108,6 +108,7 @@ pub mod tests {
     use anyhow::Result;
 
     use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, Workspace};
+    use crate::process::ProcessError;
     use crate::run_log::RunLog;
     use crate::runtime::WasmerRuntime;
 
@@ -137,6 +138,18 @@ pub mod tests {
             filter: Option<&str>,
             _mode: Mode,
         ) -> Result<Vec<TestJob>> {
+            if filter == Some("panic") {
+                return Ok(vec![
+                    TestJob {
+                        id: "pass_a".to_string(),
+                        tests: vec!["pass_a".to_string()],
+                    },
+                    TestJob {
+                        id: "panic_g".to_string(),
+                        tests: vec!["panic_g".to_string()],
+                    },
+                ]);
+            }
             let all = [
                 "pass_a",
                 "pass_b",
@@ -168,6 +181,11 @@ pub mod tests {
                 "skip" => Status::Skip,
                 "timeout" => Status::Timeout,
                 "flaky" => Status::Flaky,
+                "panic" => {
+                    return Err(anyhow::anyhow!(ProcessError::RustPanic(
+                        "fatal runtime error: stack overflow, aborting".into()
+                    )));
+                }
                 _ => Status::Pass,
             };
             Ok(vec![TestResult {
