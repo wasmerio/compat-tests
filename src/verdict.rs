@@ -50,6 +50,13 @@ enum VerdictKind {
     NoChanges,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChangeKind {
+    Regression,
+    Improvement,
+    NoChanges,
+}
+
 struct LanguageVerdict {
     config: LangConfig,
     total_tests: usize,
@@ -179,6 +186,23 @@ fn is_improvement(before: Status, after: Status) -> bool {
     before != Status::Pass && after == Status::Pass
 }
 
+pub(crate) fn classify_change_kind(
+    baseline_status: &BTreeMap<String, Status>,
+    candidate_status: &BTreeMap<String, Status>,
+    baseline_metadata: &RunMetadata,
+    candidate_metadata: &RunMetadata,
+) -> ChangeKind {
+    if has_new_crash(candidate_metadata, baseline_metadata)
+        || !changed_tests(baseline_status, candidate_status, is_regression).is_empty()
+    {
+        ChangeKind::Regression
+    } else if !changed_tests(baseline_status, candidate_status, is_improvement).is_empty() {
+        ChangeKind::Improvement
+    } else {
+        ChangeKind::NoChanges
+    }
+}
+
 fn verdict_kind(languages: &[LanguageVerdict]) -> VerdictKind {
     if languages
         .iter()
@@ -231,6 +255,13 @@ fn first_new_crash(
             test_source: None,
             output: Some(message.clone()),
         })
+}
+
+fn has_new_crash(candidate: &RunMetadata, baseline: &RunMetadata) -> bool {
+    candidate
+        .crashes
+        .iter()
+        .any(|(job_id, message)| baseline.crashes.get(job_id) != Some(message))
 }
 
 fn first_failure_example(

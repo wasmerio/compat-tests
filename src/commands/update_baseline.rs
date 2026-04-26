@@ -4,7 +4,8 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 
-use crate::reports::load_metadata;
+use crate::reports::{RunMetadata, load_metadata, load_status};
+use crate::verdict::{ChangeKind, classify_change_kind};
 
 #[derive(Args)]
 pub struct UpdateBaselineArgs {
@@ -23,12 +24,6 @@ pub fn update_baseline(args: UpdateBaselineArgs) -> Result<()> {
 
     git(&["fetch", "origin"])?;
     checkout_branch(&args.branch)?;
-    git(&["config", "user.name", "compat-tests[bot]"])?;
-    git(&[
-        "config",
-        "user.email",
-        "compat-tests[bot]@users.noreply.github.com",
-    ])?;
     copy_files(&args.source_dir, &files)?;
 
     let mut add = Command::new("git");
@@ -49,7 +44,15 @@ pub fn update_baseline(args: UpdateBaselineArgs) -> Result<()> {
         return Ok(());
     }
 
-    git(&["commit", "-m", &commit_message(&args.source_dir, &files)?])?;
+    let message = commit_message(&args.source_dir, &files)?;
+    let mut commit = Command::new("git");
+    commit
+        .args(["commit", "-m", &message.subject, "-m", &message.body])
+        .env("GIT_AUTHOR_NAME", "shield")
+        .env("GIT_AUTHOR_EMAIL", "shield@wasmer.io")
+        .env("GIT_COMMITTER_NAME", "shield")
+        .env("GIT_COMMITTER_EMAIL", "shield@wasmer.io");
+    run(commit, "spawn git commit")?;
     git(&["push", "origin", &args.branch])?;
     println!("{}", head_commit()?);
     Ok(())
@@ -87,7 +90,21 @@ fn copy_files(source_dir: &Path, files: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn commit_message(source_dir: &Path, files: &[String]) -> Result<String> {
+struct CommitMessage {
+    subject: String,
+    body: String,
+}
+
+#[derive(Default)]
+struct SummaryDelta {
+    pass: isize,
+    fail: isize,
+    timeout: isize,
+    flaky: isize,
+    crash: isize,
+}
+
+fn commit_message(source_dir: &Path, files: &[String]) -> Result<CommitMessage> {
     let metadata = files
         .iter()
         .find(|file| file.ends_with("_summary.json"))
@@ -95,6 +112,8 @@ fn commit_message(source_dir: &Path, files: &[String]) -> Result<String> {
     let metadata_path = source_dir.join(metadata);
     let metadata = load_metadata(&metadata_path)
         .with_context(|| format!("parse {}", metadata_path.display()))?;
+    let change_kind = baseline_change_kind(source_dir, files)?;
+    let delta = summary_delta(source_dir, files)?;
     let target = if metadata.wasmer.git_ref.is_empty() {
         metadata.wasmer.commit
     } else if metadata.wasmer.commit.is_empty() {
@@ -107,7 +126,86 @@ fn commit_message(source_dir: &Path, files: &[String]) -> Result<String> {
     } else {
         format!("{} ({target})", metadata.wasmer.repo)
     };
-    Ok(format!("compat: refresh snapshot for {target}"))
+    Ok(CommitMessage {
+        subject: format!("Baseline updated - {}", format_change_kind(change_kind)),
+        body: format!("Wasmer: {target}\n{}", format_delta(&delta)),
+    })
+}
+
+fn baseline_change_kind(source_dir: &Path, files: &[String]) -> Result<ChangeKind> {
+    let mut saw_improvement = false;
+    for summary_file in files.iter().filter(|file| file.ends_with("_summary.json")) {
+        let runner = summary_file
+            .strip_prefix("tests_")
+            .and_then(|name| name.strip_suffix("_summary.json"))
+            .ok_or_else(|| anyhow::anyhow!("invalid summary filename: {summary_file}"))?;
+        let results_file = format!("tests_{runner}_results.json");
+        let baseline_metadata = if Path::new(summary_file).is_file() {
+            load_metadata(Path::new(summary_file))?
+        } else {
+            RunMetadata::default()
+        };
+        let candidate_metadata = load_metadata(&source_dir.join(summary_file))?;
+        let baseline_status = if Path::new(&results_file).is_file() {
+            load_status(Path::new(&results_file))?
+        } else {
+            Default::default()
+        };
+        let candidate_status = load_status(&source_dir.join(&results_file))?;
+        match classify_change_kind(
+            &baseline_status,
+            &candidate_status,
+            &baseline_metadata,
+            &candidate_metadata,
+        ) {
+            ChangeKind::Regression => return Ok(ChangeKind::Regression),
+            ChangeKind::Improvement => saw_improvement = true,
+            ChangeKind::NoChanges => {}
+        }
+    }
+    Ok(if saw_improvement {
+        ChangeKind::Improvement
+    } else {
+        ChangeKind::NoChanges
+    })
+}
+
+fn summary_delta(source_dir: &Path, files: &[String]) -> Result<SummaryDelta> {
+    let mut delta = SummaryDelta::default();
+    for file in files.iter().filter(|file| file.ends_with("_summary.json")) {
+        let new_metadata = load_metadata(&source_dir.join(file))?;
+        let old_metadata = if Path::new(file).is_file() {
+            load_metadata(Path::new(file))?
+        } else {
+            RunMetadata::default()
+        };
+        delta.pass += count_delta(&old_metadata, &new_metadata, "PASS");
+        delta.fail += count_delta(&old_metadata, &new_metadata, "FAIL");
+        delta.timeout += count_delta(&old_metadata, &new_metadata, "TIMEOUT");
+        delta.flaky += count_delta(&old_metadata, &new_metadata, "FLAKY");
+        delta.crash += new_metadata.crashes.len() as isize - old_metadata.crashes.len() as isize;
+    }
+    Ok(delta)
+}
+
+fn count_delta(old: &RunMetadata, new: &RunMetadata, key: &str) -> isize {
+    new.counts.get(key).copied().unwrap_or_default() as isize
+        - old.counts.get(key).copied().unwrap_or_default() as isize
+}
+
+fn format_change_kind(kind: ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Regression => "REGRESSION",
+        ChangeKind::Improvement => "IMPROVEMENT",
+        ChangeKind::NoChanges => "NO CHANGE",
+    }
+}
+
+fn format_delta(delta: &SummaryDelta) -> String {
+    format!(
+        "Delta: PASS {:+}, FAIL {:+}, TIMEOUT {:+}, FLAKY {:+}, CRASHES {:+}",
+        delta.pass, delta.fail, delta.timeout, delta.flaky, delta.crash
+    )
 }
 
 fn checkout_branch(branch: &str) -> Result<()> {
@@ -149,5 +247,46 @@ fn run(mut cmd: Command, context: &str) -> Result<()> {
         Ok(())
     } else {
         bail!("{context}: exited with {status}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SummaryDelta, format_change_kind, format_delta};
+    use crate::verdict::ChangeKind;
+
+    #[test]
+    fn classifies_regression_when_failures_increase() {
+        assert_eq!(
+            format_change_kind(ChangeKind::Regression),
+            "REGRESSION"
+        );
+    }
+
+    #[test]
+    fn classifies_improvement_when_failures_drop() {
+        assert_eq!(
+            format_change_kind(ChangeKind::Improvement),
+            "IMPROVEMENT"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_no_change_when_deltas_cancel_out() {
+        assert_eq!(format_change_kind(ChangeKind::NoChanges), "NO CHANGE");
+    }
+
+    #[test]
+    fn formats_delta_summary() {
+        assert_eq!(
+            format_delta(&SummaryDelta {
+                pass: 4,
+                fail: -2,
+                timeout: 0,
+                flaky: 1,
+                crash: -3,
+            }),
+            "Delta: PASS +4, FAIL -2, TIMEOUT +0, FLAKY +1, CRASHES -3"
+        );
     }
 }
