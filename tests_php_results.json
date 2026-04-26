@@ -15605,7 +15605,7 @@
   "ext/standard/tests/file/ftruncate_bug76422.phpt": "SKIP",
   "ext/standard/tests/file/ftruncate_bug76803.phpt": "FAIL",
   "ext/standard/tests/file/ftruncate_bug77081.phpt": "PASS",
-  "ext/standard/tests/file/ftruncate_error.phpt": "PASS",
+  "ext/standard/tests/file/ftruncate_error.phpt": "FAIL",
   "ext/standard/tests/file/ftruncate_variation1-win32-mb.phpt": "SKIP",
   "ext/standard/tests/file/ftruncate_variation1-win32.phpt": "SKIP",
   "ext/standard/tests/file/ftruncate_variation1.phpt": "FAIL",

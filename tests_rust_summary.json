@@ -13,8 +13,8 @@
     "root::linkchecker::checks-923f308bfce633e2": "process exited abnormally: exit status: 27\njob: root::linkchecker::checks-923f308bfce633e2\ntests:\n- root::linkchecker::checks-923f308bfce633e2::basic_broken\n- root::linkchecker::checks-923f308bfce633e2::broken_fragment_local\n- root::linkchecker::checks-923f308bfce633e2::broken_fragment_remote\n- root::linkchecker::checks-923f308bfce633e2::broken_intra_doc_link\n- root::linkchecker::checks-923f308bfce633e2::broken_redir\n- root::linkchecker::checks-923f308bfce633e2::directory_link\n- root::linkchecker::checks-923f308bfce633e2::redirect_loop\n- root::linkchecker::checks-923f308bfce633e2::valid"
   },
   "run": {
-    "finished_at": "2026-04-25T18:12:11Z",
-    "started_at": "2026-04-25T17:19:19Z"
+    "finished_at": "2026-04-26T07:52:05Z",
+    "started_at": "2026-04-26T06:57:57Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"
