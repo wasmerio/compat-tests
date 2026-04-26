@@ -14,15 +14,20 @@ use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
 
 const DISCOVER_AND_RUN: &str = r#"import os,sys,unittest
 job = sys.argv[1]
+seen = set()
+def public_test_id(test):
+    test_id = test.id()
+    return job if test_id.startswith("unittest.loader.") else test_id
 def walk(suite):
     for item in suite:
         if isinstance(item, unittest.TestSuite):
             yield from walk(item)
         else:
-            test_id = item.id()
-            if not test_id.startswith("unittest.loader."):
+            test_id = public_test_id(item)
+            if test_id not in seen:
+                seen.add(test_id)
                 print("CASE", test_id, flush=True)
-                yield test_id
+            yield test_id
 try:
     suite = unittest.defaultTestLoader.loadTestsFromName(job)
 except unittest.SkipTest:
@@ -31,9 +36,7 @@ except unittest.SkipTest:
 cases = list(walk(suite))
 class Result(unittest.TextTestResult):
     def _mark(self, status, test):
-        test_id = test.id()
-        if not test_id.startswith("unittest.loader."):
-            print(status, test_id, flush=True)
+        print(status, public_test_id(test), flush=True)
     def addSuccess(self, test): super().addSuccess(test); self._mark("PASS", test)
     def addFailure(self, test, err): super().addFailure(test, err); self._mark("FAIL", test)
     def addError(self, test, err): super().addError(test, err); self._mark("FAIL", test)
@@ -654,7 +657,10 @@ impl PythonProtocol {
 
     fn handle_line(&mut self, line: &str) {
         if let Some(rest) = line.strip_prefix("CASE ") {
-            self.cases.push(rest.trim().to_string());
+            let id = rest.trim();
+            if !self.cases.iter().any(|case| case == id) {
+                self.cases.push(id.to_string());
+            }
         } else if let Some(rest) = line.strip_prefix("PASS ") {
             self.statuses.insert(rest.trim().to_string(), Status::Pass);
         } else if let Some(rest) = line.strip_prefix("FAIL ") {
@@ -720,6 +726,24 @@ FAIL mod.C
                     status: Status::Fail
                 },
             ],
+        );
+    }
+
+    #[test]
+    fn duplicate_case_markers_collapse_to_one_result() {
+        let stdout = "\
+CASE mod
+FAIL mod
+CASE mod
+FAIL mod
+";
+        let results = parse_run_output(stdout, false, "mod");
+        assert_eq!(
+            results,
+            vec![TestResult {
+                id: "mod".into(),
+                status: Status::Fail,
+            }]
         );
     }
 
