@@ -13,6 +13,10 @@ on:
       results_branch:
         required: true
 
+concurrency:
+  group: compat-pr-${{ inputs.comment_pr_number }}
+  cancel-in-progress: true
+
 jobs:
   suite:
     uses: ./.github/workflows/suite.yml
