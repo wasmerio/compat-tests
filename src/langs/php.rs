@@ -272,16 +272,20 @@ fn map_php_status(status: &str) -> Status {
 
 fn normalize_test_name(source_root: &Path, name: &str) -> String {
     let name = name.trim();
-    let name = if let Some((_, redirected)) = name.split_once(": ") {
-        if name.starts_with("# ") {
-            redirected
-        } else {
-            name
-        }
-    } else {
-        name
-    };
-    let path = Path::new(name);
+    if let Some((redirector, redirected)) = name.split_once(": ")
+        && let Some(redirector) = redirector.strip_prefix("# ")
+    {
+        return format!(
+            "# {}: {}",
+            normalize_test_path(source_root, redirector),
+            normalize_test_path(source_root, redirected)
+        );
+    }
+    normalize_test_path(source_root, name)
+}
+
+fn normalize_test_path(source_root: &Path, name: &str) -> String {
+    let path = Path::new(name.trim());
     if let Ok(rel) = path.strip_prefix(source_root) {
         return rel.to_string_lossy().replace('\\', "/");
     }
@@ -637,7 +641,9 @@ function compute_summary(): void"#,
 
 #[cfg(test)]
 mod tests {
-    use super::PhpRunner;
+    use std::path::Path;
+
+    use super::{PhpRunner, normalize_test_name};
 
     #[test]
     fn php_batch_filter_selects_whole_batch() {
@@ -653,5 +659,15 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].tests.len(), 50);
         assert_eq!(selected[0].tests[0], "test-050.phpt");
+    }
+
+    #[test]
+    fn normalize_redirected_php_test_keeps_wrapper_context() {
+        let source_root = Path::new("/repo");
+        let name = "# /repo/ext/pdo_sqlite/tests/common.phpt: /repo/ext/pdo/tests/bug_34630.phpt";
+        assert_eq!(
+            normalize_test_name(source_root, name),
+            "# ext/pdo_sqlite/tests/common.phpt: ext/pdo/tests/bug_34630.phpt"
+        );
     }
 }
