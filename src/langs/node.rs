@@ -9,7 +9,10 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace};
-use crate::process::{ProcessError, ProcessSpec, ignore_stream, run_process, write_stream};
+use crate::process::{
+    ProcessError, ProcessSpec, contains_runtime_crash_text, ignore_stream, run_process,
+    write_stream,
+};
 use crate::run_log::RunLog;
 use crate::runtime::WasmerRuntime;
 
@@ -364,16 +367,17 @@ fn node_crash_issue(result: &CurrentTapResult) -> Option<String> {
         return None;
     }
     let block = result.block.join("\n");
-    let crash_like = matches!(result.exit_code, Some(134 | 139))
-        || block.contains("Segmentation fault")
-        || block.contains("core dumped")
-        || block.contains("double free or corruption")
-        || block.contains("Program recieved fatal signal")
-        || block.contains("Assertion failed:")
-        || block.contains("RuntimeError: out of bounds memory access")
-        || block.contains("RuntimeError: uninitialized element")
-        || block.contains("JoinHandle polled after completion");
+    let wrapper_crash = contains_node_wrapper_reported_wasmer_crash_text(&block);
+    let crash_like = wrapper_crash || contains_runtime_crash_text(&block);
     crash_like.then(|| format!("crash: {block}"))
+}
+
+fn contains_node_wrapper_reported_wasmer_crash_text(text: &str) -> bool {
+    (text.contains("node-wrapper-") || text.contains("node_via_wasmer.sh"))
+        && (text.contains("Segmentation fault")
+            || text.contains("Trace/breakpoint trap")
+            || text.contains("core dumped")
+            || text.contains("Aborted"))
 }
 
 fn parse_tap_id(line: &str) -> Option<String> {
@@ -614,8 +618,7 @@ not ok 1 parallel/test-crash.js
   severity: fail
   exitcode: 139
   stack: |-
-    Assertion failed: foo
-    Segmentation fault (core dumped)
+    /tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run --registry 'wasmer.io' --net '--experimental-napi' --volume '/tmp/checkout:/tmp/checkout' 'wasmer/edgejs' -- \"$@\"
   ...
 ",
         )
@@ -629,6 +632,47 @@ not ok 1 parallel/test-crash.js
                 .as_ref()
                 .is_some_and(|message| message.starts_with("crash: "))
         );
+    }
+
+    #[test]
+    fn detects_node_wrapper_reported_wasmer_crash_text() {
+        assert!(contains_node_wrapper_reported_wasmer_crash_text(
+            "/tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run"
+        ));
+        assert!(!contains_node_wrapper_reported_wasmer_crash_text(
+            "AssertionError [ERR_ASSERTION]: ifError got unwanted exception"
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_guest_assertion_as_crash() {
+        let dir = tempdir::TempDir::new("node-tap-assert").unwrap();
+        let path = dir.path().join("results.tap");
+        fs::write(
+            &path,
+            "\
+TAP version 13
+1..1
+not ok 1 parallel/test-assert.js
+  ---
+  duration_ms: 12.34
+  severity: fail
+  exitcode: 139
+  stack: |-
+    node:assert:850
+        throw newErr;
+        ^
+    
+    AssertionError [ERR_ASSERTION]: ifError got unwanted exception: command not supported
+        at Object.<anonymous> (/tmp/test.js:1:1)
+  ...
+",
+        )
+        .unwrap();
+
+        let results = parse_tap_results(&path).unwrap();
+        assert_eq!(results["parallel/test-assert.js"].status, Status::Fail);
+        assert_eq!(results["parallel/test-assert.js"].issue, None);
     }
 
     #[test]

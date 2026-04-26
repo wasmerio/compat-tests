@@ -289,6 +289,22 @@ fn is_tracing_json_line(line: &str) -> bool {
     line.starts_with("{\"timestamp\"") && line.contains("\"level\"")
 }
 
+pub(crate) fn contains_runtime_crash_text(text: &str) -> bool {
+    let mut pending_runtime_trap = false;
+    for line in text.lines() {
+        if starts_rust_panic_capture(line)
+            || line.contains("failed with runtime error: RuntimeError:")
+        {
+            return true;
+        }
+        if pending_runtime_trap && is_wasm_runtime_trap_frame(line) {
+            return true;
+        }
+        pending_runtime_trap = starts_wasm_runtime_trap_header(line);
+    }
+    false
+}
+
 fn starts_rust_panic_capture(line: &str) -> bool {
     // TODO: Not super bulletproof way to detect panics, maybe there is a better way?
     line.contains("panicked at")
@@ -573,6 +589,33 @@ mod tests {
             ),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn runtime_crash_text_detects_panic_markers() {
+        assert!(contains_runtime_crash_text(
+            "thread 'TokioTaskManager Thread Pool_thread_6' panicked at boom"
+        ));
+        assert!(contains_runtime_crash_text(
+            "fatal runtime error: stack overflow, aborting"
+        ));
+    }
+
+    #[test]
+    fn runtime_crash_text_detects_runtime_trap_markers() {
+        assert!(contains_runtime_crash_text(
+            "RuntimeError: out of bounds memory access\n    at <unnamed> (<module>[9015]:0xffffffff)\n"
+        ));
+        assert!(contains_runtime_crash_text(
+            "Thread 3 of process 1 failed with runtime error: RuntimeError: out of bounds memory access"
+        ));
+    }
+
+    #[test]
+    fn runtime_crash_text_ignores_guest_runtime_error_without_stack() {
+        assert!(!contains_runtime_crash_text(
+            "RuntimeError: ffi_prep_cif_var failed\nTraceback detail\n"
+        ));
     }
 
     #[test]
