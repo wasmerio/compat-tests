@@ -66,6 +66,7 @@ enum ProcessEvent {
 struct ProcessState {
     open_streams: usize,
     panic_capture: Option<PanicCapture>,
+    pending_runtime_trap: Option<String>,
     timed_out: bool,
 }
 
@@ -101,6 +102,7 @@ where
     let mut state = ProcessState {
         open_streams: 2,
         panic_capture: None,
+        pending_runtime_trap: None,
         timed_out: false,
     };
     let deadline = Instant::now() + spec.timeout;
@@ -211,7 +213,23 @@ fn handle_line<F>(
 where
     F: FnMut(Stream, &str) -> Result<()>,
 {
-    if state.panic_capture.is_none() && starts_panic_capture(stream, &line) {
+    let mut current_line_already_captured = false;
+    if stream == Stream::Stderr {
+        if let Some(pending) = state.pending_runtime_trap.take() {
+            if is_wasm_runtime_trap_frame(&line) {
+                let mut text = String::new();
+                push_panic_line(&mut text, &pending);
+                push_panic_line(&mut text, &line);
+                state.panic_capture = Some(PanicCapture { stream, text });
+                current_line_already_captured = true;
+            } else if starts_wasm_runtime_trap_header(&line) {
+                state.pending_runtime_trap = Some(line.clone());
+            }
+        } else if state.panic_capture.is_none() && starts_wasm_runtime_trap_header(&line) {
+            state.pending_runtime_trap = Some(line.clone());
+        }
+    }
+    if state.panic_capture.is_none() && starts_rust_panic_capture(&line) {
         state.panic_capture = Some(PanicCapture {
             stream,
             text: String::new(),
@@ -220,6 +238,7 @@ where
     if let Some(capture) = &mut state.panic_capture
         && capture.stream == stream
         && !is_tracing_json_line(&line)
+        && !current_line_already_captured
     {
         push_panic_line(&mut capture.text, &line);
     }
@@ -261,11 +280,6 @@ fn is_tracing_json_line(line: &str) -> bool {
     line.starts_with("{\"timestamp\"") && line.contains("\"level\"")
 }
 
-fn starts_panic_capture(stream: Stream, line: &str) -> bool {
-    starts_rust_panic_capture(line)
-        || (stream == Stream::Stderr && starts_wasm_runtime_trap_capture(line))
-}
-
 fn starts_rust_panic_capture(line: &str) -> bool {
     // TODO: Not super bulletproof way to detect panics, maybe there is a better way?
     line.contains("panicked at")
@@ -276,8 +290,12 @@ fn starts_rust_panic_capture(line: &str) -> bool {
         || line.contains("thread panicked while processing panic")
 }
 
-fn starts_wasm_runtime_trap_capture(line: &str) -> bool {
+fn starts_wasm_runtime_trap_header(line: &str) -> bool {
     line.starts_with("RuntimeError: ")
+}
+
+fn is_wasm_runtime_trap_frame(line: &str) -> bool {
+    line.trim_start().starts_with("at ")
 }
 
 fn spawn_reader<R: std::io::Read + Send + 'static>(
@@ -505,6 +523,22 @@ mod tests {
     fn process_ignores_stdout_runtime_error_text() {
         let err = run_process(
             sh("printf \"RuntimeError: out of bounds memory access\\n\"; exit 1"),
+            |_, _| Ok(()),
+        )
+        .expect_err("exit");
+        match err {
+            ProcessError::AbnormalExit(message) => assert!(
+                message.contains("1"),
+                "expected exit status in message, got {message:?}"
+            ),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_ignores_guest_runtime_error_without_wasm_stack() {
+        let err = run_process(
+            sh("printf \"RuntimeError: ffi_prep_cif_var failed\\nTraceback detail\\n\" 1>&2; exit 1"),
             |_, _| Ok(()),
         )
         .expect_err("exit");

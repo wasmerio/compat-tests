@@ -81,13 +81,13 @@ pub struct ExecutionReport {
 #[derive(Debug, PartialEq)]
 pub struct StatusCounts(pub HashMap<Status, usize>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ItemError {
     pub id: String,
     pub message: String,
 }
 
-type StabilizedChange = (String, Status, bool, Option<(Status, String)>);
+type StabilizedChange = (String, Status, bool, Option<(Status, String)>, Option<String>);
 
 impl StatusCounts {
     pub fn increment(&mut self, status: Status) {
@@ -183,7 +183,7 @@ fn run_with_runner(
 
     let status = results_by_id(&report.results);
     let baseline_status = load_baseline_status(&workspace, &args.compare_ref, opts.name)?;
-    let (status, flaky_count, regressions) =
+    let (status, flaky_count, regressions, rerun_errors) =
         stabilize_changed_tests(runner, &workspace, &wasmer, &baseline_status, status)?;
     write_regressions(
         &workspace
@@ -191,12 +191,14 @@ fn run_with_runner(
             .join(test_regressions_filename(opts.name)),
         &regressions,
     )?;
+    let mut errors = report.errors.clone();
+    errors.extend(rerun_errors);
 
     finalize_run(
         &workspace,
         &resolved_wasmer.identity,
         status,
-        &report.errors,
+        &errors,
         RunConfig {
             timeout: args.timeout,
             runner_name: opts.name,
@@ -214,7 +216,7 @@ fn stabilize_changed_tests(
     wasmer: &WasmerRuntime,
     baseline_status: &BTreeMap<String, Status>,
     candidate_status: BTreeMap<String, Status>,
-) -> Result<(BTreeMap<String, Status>, usize, RunRegressions)> {
+) -> Result<(BTreeMap<String, Status>, usize, RunRegressions, Vec<ItemError>)> {
     let changed: Vec<String> = baseline_status
         .iter()
         .filter(|(test, old)| {
@@ -225,7 +227,7 @@ fn stabilize_changed_tests(
         .map(|(test, _)| test.clone())
         .collect();
     if changed.is_empty() {
-        return Ok((candidate_status, 0, RunRegressions::default()));
+        return Ok((candidate_status, 0, RunRegressions::default(), vec![]));
     }
 
     tracing::info!(
@@ -251,17 +253,24 @@ fn stabilize_changed_tests(
     let mut effective = candidate_status;
     let mut flaky_count = 0;
     let mut regressions = RunRegressions::default();
+    let mut errors = Vec::new();
     for rerun in reruns {
-        let (test_name, status, flaky, regression) = rerun?;
+        let (test_name, status, flaky, regression, crash) = rerun?;
         effective.insert(test_name.clone(), status);
         if flaky {
             flaky_count += 1;
         }
         if let Some((status_after, output)) = regression {
-            regressions.record(test_name, Status::Pass, status_after, output);
+            regressions.record(test_name.clone(), Status::Pass, status_after, output);
+        }
+        if let Some(message) = crash {
+            errors.push(ItemError {
+                id: test_name,
+                message,
+            });
         }
     }
-    Ok((effective, flaky_count, regressions))
+    Ok((effective, flaky_count, regressions, errors))
 }
 
 fn should_stabilize_status_change(old: Status, new: Status) -> bool {
@@ -286,7 +295,7 @@ fn stabilize_changed_test(
         .unwrap_or(Status::Fail);
 
     if new_status != Status::Pass {
-        let (rerun_status, output) = rerun_status(runner, workspace, wasmer, test_name)?;
+        let (rerun_status, output, crash) = rerun_status(runner, workspace, wasmer, test_name)?;
         let confirmed = rerun_status == new_status;
         return Ok((
             test_name.to_string(),
@@ -297,16 +306,18 @@ fn stabilize_changed_test(
             } else {
                 None
             },
+            crash,
         ));
     }
 
     for _ in 0..RETEST_RUNS {
-        if rerun_status(runner, workspace, wasmer, test_name)?.0 != Status::Pass {
-            return Ok((test_name.to_string(), old_status, true, None));
+        let (rerun_status, _, crash) = rerun_status(runner, workspace, wasmer, test_name)?;
+        if rerun_status != Status::Pass {
+            return Ok((test_name.to_string(), old_status, true, None, crash));
         }
     }
 
-    Ok((test_name.to_string(), Status::Pass, false, None))
+    Ok((test_name.to_string(), Status::Pass, false, None, None))
 }
 
 fn now_utc() -> String {
@@ -455,6 +466,9 @@ fn execute_tests(
 }
 
 fn job_error_message(job: &TestJob, error: &anyhow::Error) -> String {
+    if format!("{error}").starts_with("crash: ") {
+        return format!("{error:#}");
+    }
     let mut message = format!("{error:#}\njob: {}\ntests:", job.id);
     for test in &job.tests {
         message.push_str("\n- ");
@@ -468,7 +482,7 @@ fn rerun_status(
     workspace: &Workspace,
     wasmer: &WasmerRuntime,
     id: &str,
-) -> Result<(Status, Option<String>)> {
+) -> Result<(Status, Option<String>, Option<String>)> {
     let rerun_log_path = rerun_log_path(workspace, id);
     if let Some(parent) = rerun_log_path.parent() {
         fs::create_dir_all(parent)?;
@@ -489,12 +503,14 @@ fn rerun_status(
         Ok(tests) => tests,
         Err(err) => {
             let output = read_rerun_log(&rerun_log_path)?;
+            let message = format!("{err:#}");
             return Ok((
                 Status::Fail,
                 Some(match output {
-                    Some(output) if !output.trim().is_empty() => format!("{err:#}\n\n{output}"),
-                    _ => format!("{err:#}"),
+                    Some(output) if !output.trim().is_empty() => format!("{message}\n\n{output}"),
+                    _ => message.clone(),
                 }),
+                message.starts_with("crash: ").then_some(message),
             ));
         }
     };
@@ -508,6 +524,7 @@ fn rerun_status(
                 }
                 _ => format!("debug rerun for {id} produced 0 results"),
             }),
+            None,
         ));
     }
     if tests.len() != 1 {
@@ -534,10 +551,11 @@ fn rerun_status(
                     }
                     _ => format!("debug rerun for {id} returned FLAKY"),
                 }),
+                None,
             ));
         }
     };
-    Ok((status, read_rerun_log(&rerun_log_path)?))
+    Ok((status, read_rerun_log(&rerun_log_path)?, None))
 }
 
 fn rerun_log_path(workspace: &Workspace, id: &str) -> PathBuf {
@@ -762,7 +780,7 @@ mod tests {
         let baseline = BTreeMap::from([("panic_g".to_string(), Status::Pass)]);
         let candidate = BTreeMap::from([("panic_g".to_string(), Status::Fail)]);
 
-        let (status, flaky_count, regressions) = stabilize_changed_tests(
+        let (status, flaky_count, regressions, errors) = stabilize_changed_tests(
             &MockRunner,
             &workspace,
             &wasmer.runtime,
@@ -782,6 +800,9 @@ mod tests {
                 .output
                 .contains("fatal runtime error: stack overflow")
         );
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].id, "panic_g");
+        assert!(errors[0].message.contains("fatal runtime error: stack overflow"));
     }
 
     #[test]
@@ -803,7 +824,7 @@ mod tests {
         let baseline = BTreeMap::from([("flaky_f".to_string(), Status::Pass)]);
         let candidate = BTreeMap::from([("flaky_f".to_string(), Status::Fail)]);
 
-        let (status, flaky_count, regressions) = stabilize_changed_tests(
+        let (status, flaky_count, regressions, errors) = stabilize_changed_tests(
             &MockRunner,
             &workspace,
             &wasmer.runtime,
@@ -816,6 +837,7 @@ mod tests {
         assert_eq!(flaky_count, 0);
         assert_eq!(regressions.regressions.len(), 1);
         assert!(regressions.regressions[0].output.contains("returned FLAKY"));
+        assert!(errors.is_empty());
     }
 
     #[test]

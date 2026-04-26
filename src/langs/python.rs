@@ -12,7 +12,7 @@ use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
 
-const DISCOVER_AND_RUN: &str = r#"import os,sys,unittest
+const DISCOVER_AND_RUN: &str = r#"import os,sys,traceback,unittest
 job = sys.argv[1]
 seen = set()
 def public_test_id(test):
@@ -30,10 +30,15 @@ def walk(suite):
             yield test_id
 try:
     suite = unittest.defaultTestLoader.loadTestsFromName(job)
+    cases = list(walk(suite))
 except unittest.SkipTest:
     print("SKIP", job, flush=True)
     raise SystemExit(0)
-cases = list(walk(suite))
+except Exception:
+    print("CASE", job, flush=True)
+    print("FAIL", job, flush=True)
+    traceback.print_exc()
+    raise SystemExit(1)
 class Result(unittest.TextTestResult):
     def _mark(self, status, test):
         print(status, public_test_id(test), flush=True)
