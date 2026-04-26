@@ -3,18 +3,16 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 1037,
+    "FAIL": 1029,
     "FLAKY": 0,
-    "PASS": 20809,
+    "PASS": 20817,
     "SKIP": 43,
     "TIMEOUT": 0
   },
-  "crashes": {
-    "root::linkchecker::checks-923f308bfce633e2": "process exited abnormally: exit status: 27\njob: root::linkchecker::checks-923f308bfce633e2\ntests:\n- root::linkchecker::checks-923f308bfce633e2::basic_broken\n- root::linkchecker::checks-923f308bfce633e2::broken_fragment_local\n- root::linkchecker::checks-923f308bfce633e2::broken_fragment_remote\n- root::linkchecker::checks-923f308bfce633e2::broken_intra_doc_link\n- root::linkchecker::checks-923f308bfce633e2::broken_redir\n- root::linkchecker::checks-923f308bfce633e2::directory_link\n- root::linkchecker::checks-923f308bfce633e2::redirect_loop\n- root::linkchecker::checks-923f308bfce633e2::valid"
-  },
+  "crashes": {},
   "run": {
-    "finished_at": "2026-04-26T07:52:05Z",
-    "started_at": "2026-04-26T06:57:57Z"
+    "finished_at": "2026-04-26T10:19:23Z",
+    "started_at": "2026-04-26T09:26:03Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"

@@ -15613,7 +15613,7 @@
   "ext/standard/tests/file/ftruncate_variation2.phpt": "FAIL",
   "ext/standard/tests/file/ftruncate_variation3-win32.phpt": "SKIP",
   "ext/standard/tests/file/ftruncate_variation3.phpt": "FAIL",
-  "ext/standard/tests/file/ftruncate_variation4.phpt": "PASS",
+  "ext/standard/tests/file/ftruncate_variation4.phpt": "FAIL",
   "ext/standard/tests/file/ftruncate_variation5-win32.phpt": "SKIP",
   "ext/standard/tests/file/ftruncate_variation5.phpt": "FAIL",
   "ext/standard/tests/file/ftruncate_variation6-win32.phpt": "SKIP",
