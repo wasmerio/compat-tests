@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow, bail};
 
 use super::{LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace};
 use crate::process::{
-    ProcessError, ProcessSpec, contains_runtime_crash_text, ignore_stream, run_process,
+    ProcessError, ProcessSpec, extract_runtime_crash_text, ignore_stream, run_process,
     write_stream,
 };
 use crate::run_log::RunLog;
@@ -367,17 +367,26 @@ fn node_crash_issue(result: &CurrentTapResult) -> Option<String> {
         return None;
     }
     let block = result.block.join("\n");
-    let wrapper_crash = contains_node_wrapper_reported_wasmer_crash_text(&block);
-    let crash_like = wrapper_crash || contains_runtime_crash_text(&block);
-    crash_like.then(|| format!("crash: {block}"))
+    extract_node_wrapper_reported_wasmer_crash_text(&block)
+        .or_else(|| extract_runtime_crash_text(&block))
+        .map(|crash| format!("crash: {crash}"))
 }
 
 fn contains_node_wrapper_reported_wasmer_crash_text(text: &str) -> bool {
-    (text.contains("node-wrapper-") || text.contains("node_via_wasmer.sh"))
-        && (text.contains("Segmentation fault")
-            || text.contains("Trace/breakpoint trap")
-            || text.contains("core dumped")
-            || text.contains("Aborted"))
+    extract_node_wrapper_reported_wasmer_crash_text(text).is_some()
+}
+
+fn extract_node_wrapper_reported_wasmer_crash_text(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .find(|line| {
+            (line.contains("node-wrapper-") || line.contains("node_via_wasmer.sh"))
+                && (line.contains("Segmentation fault")
+                    || line.contains("Trace/breakpoint trap")
+                    || line.contains("core dumped")
+                    || line.contains("Aborted"))
+        })
+        .map(|line| format!("{line}\n"))
 }
 
 fn parse_tap_id(line: &str) -> Option<String> {
@@ -642,6 +651,30 @@ not ok 1 parallel/test-crash.js
         assert!(!contains_node_wrapper_reported_wasmer_crash_text(
             "AssertionError [ERR_ASSERTION]: ifError got unwanted exception"
         ));
+    }
+
+    #[test]
+    fn node_crash_issue_keeps_only_wrapper_crash_text() {
+        let issue = node_crash_issue(&CurrentTapResult {
+            id: "parallel/test-crash.js".to_string(),
+            status: Status::Fail,
+            block: vec![
+                "not ok 1 parallel/test-crash".to_string(),
+                "  ---".to_string(),
+                "  stack: |-".to_string(),
+                "    AssertionError [ERR_ASSERTION]: guest failure".to_string(),
+                "    /tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run".to_string(),
+                "  ...".to_string(),
+            ],
+            exit_code: Some(139),
+            expect_stack_line: false,
+        })
+        .expect("wrapper crash issue");
+
+        assert_eq!(
+            issue,
+            "crash:     /tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run\n"
+        );
     }
 
     #[test]

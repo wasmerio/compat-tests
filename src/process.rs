@@ -290,19 +290,47 @@ fn is_tracing_json_line(line: &str) -> bool {
 }
 
 pub(crate) fn contains_runtime_crash_text(text: &str) -> bool {
-    let mut pending_runtime_trap = false;
-    for line in text.lines() {
-        if starts_rust_panic_capture(line)
-            || line.contains("failed with runtime error: RuntimeError:")
+    extract_runtime_crash_text(text).is_some()
+}
+
+pub(crate) fn extract_runtime_crash_text(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        if starts_rust_panic_capture(line) || line.contains("failed with runtime error: RuntimeError:") {
+            return Some(collect_crash_block(&lines[index..]));
+        }
+        if starts_wasm_runtime_trap_header(line)
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| is_wasm_runtime_trap_frame(next))
         {
-            return true;
+            return Some(collect_runtime_trap(&lines[index..]));
         }
-        if pending_runtime_trap && is_wasm_runtime_trap_frame(line) {
-            return true;
-        }
-        pending_runtime_trap = starts_wasm_runtime_trap_header(line);
     }
-    false
+    None
+}
+
+fn collect_crash_block(lines: &[&str]) -> String {
+    let mut text = String::new();
+    for line in lines.iter().take(PANIC_CAPTURE_LINE_LIMIT) {
+        push_panic_line(&mut text, line);
+    }
+    text
+}
+
+fn collect_runtime_trap(lines: &[&str]) -> String {
+    let mut text = String::new();
+    if let Some(first) = lines.first() {
+        push_panic_line(&mut text, first);
+    }
+    for line in lines.iter().skip(1) {
+        if is_wasm_runtime_trap_frame(line) {
+            push_panic_line(&mut text, line);
+            continue;
+        }
+        break;
+    }
+    text
 }
 
 fn starts_rust_panic_capture(line: &str) -> bool {
