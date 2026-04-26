@@ -488,30 +488,56 @@ fn rerun_status(
     ) {
         Ok(tests) => tests,
         Err(err) => {
+            let output = read_rerun_log(&rerun_log_path)?;
             return Ok((
                 Status::Fail,
-                Some(format_rerun_error(&err, read_rerun_log(&rerun_log_path)?)),
+                Some(match output {
+                    Some(output) if !output.trim().is_empty() => format!("{err:#}\n\n{output}"),
+                    _ => format!("{err:#}"),
+                }),
             ));
         }
     };
+    if tests.is_empty() {
+        let output = read_rerun_log(&rerun_log_path)?;
+        return Ok((
+            Status::Fail,
+            Some(match output {
+                Some(output) if !output.trim().is_empty() => {
+                    format!("debug rerun for {id} produced 0 results\n\n{output}")
+                }
+                _ => format!("debug rerun for {id} produced 0 results"),
+            }),
+        ));
+    }
     if tests.len() != 1 {
-        bail!("debug rerun for {id} produced {} results", tests.len());
+        let output = read_rerun_log(&rerun_log_path)?;
+        bail!("{}", match output {
+            Some(output) if !output.trim().is_empty() => {
+                format!("debug rerun for {id} produced {} results\n\n{output}", tests.len())
+            }
+            _ => format!("debug rerun for {id} produced {} results", tests.len()),
+        });
     }
     let status = match tests.into_iter().next().unwrap().status {
         Status::Pass => Status::Pass,
         Status::Fail => Status::Fail,
         Status::Skip => Status::Skip,
         Status::Timeout => Status::Timeout,
-        Status::Flaky => bail!("debug rerun for {id} returned FLAKY"),
+        Status::Flaky => {
+            let output = read_rerun_log(&rerun_log_path)?;
+            return Ok((
+                Status::Fail,
+                Some(match output {
+                    Some(output) if !output.trim().is_empty() => {
+                        format!("debug rerun for {id} returned FLAKY\n\n{output}")
+                    }
+                    _ => format!("debug rerun for {id} returned FLAKY"),
+                }),
+            ));
+        }
     };
     Ok((status, read_rerun_log(&rerun_log_path)?))
-}
-
-fn format_rerun_error(err: &anyhow::Error, output: Option<String>) -> String {
-    match output {
-        Some(output) if !output.trim().is_empty() => format!("{err:#}\n\n{output}"),
-        _ => format!("{err:#}"),
-    }
 }
 
 fn rerun_log_path(workspace: &Workspace, id: &str) -> PathBuf {
@@ -756,6 +782,40 @@ mod tests {
                 .output
                 .contains("fatal runtime error: stack overflow")
         );
+    }
+
+    #[test]
+    fn stabilization_treats_flaky_reruns_as_failed_tests() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let dir = TempDir::new("shield-stabilize-flaky").expect("tempdir");
+        let workspace = Workspace {
+            output_dir: dir.path().to_path_buf(),
+            checkout: cwd,
+            work_dir: dir.path().to_path_buf(),
+        };
+        let wasmer = WasmerRuntime::resolve(
+            RuntimeSource::LocalBinary("wasmer".into()),
+            dir.path(),
+            Duration::ZERO,
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
+        let baseline = BTreeMap::from([("flaky_f".to_string(), Status::Pass)]);
+        let candidate = BTreeMap::from([("flaky_f".to_string(), Status::Fail)]);
+
+        let (status, flaky_count, regressions) = stabilize_changed_tests(
+            &MockRunner,
+            &workspace,
+            &wasmer.runtime,
+            &baseline,
+            candidate,
+        )
+        .expect("stabilize");
+
+        assert_eq!(status["flaky_f"], Status::Fail);
+        assert_eq!(flaky_count, 0);
+        assert_eq!(regressions.regressions.len(), 1);
+        assert!(regressions.regressions[0].output.contains("returned FLAKY"));
     }
 
     #[test]
