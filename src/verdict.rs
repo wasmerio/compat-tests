@@ -217,7 +217,12 @@ fn verdict_kind(languages: &[LanguageVerdict]) -> VerdictKind {
 }
 
 fn total_tests(metadata: &RunMetadata) -> usize {
-    metadata.counts.values().sum()
+    metadata
+        .counts
+        .iter()
+        .filter(|(status, _)| status.as_str() != "FLAKY")
+        .map(|(_, count)| count)
+        .sum()
 }
 
 fn pass_rate(metadata: &RunMetadata) -> f64 {
@@ -246,7 +251,7 @@ fn first_new_crash(
     candidate
         .crashes
         .iter()
-        .find(|(job_id, message)| baseline.crashes.get(*job_id) != Some(*message))
+        .find(|(job_id, _)| !baseline.crashes.contains_key(*job_id))
         .map(|(job_id, message)| CrashExample {
             repro_command: Some(format!(
                 "shield run --lang {} --wasmer [WASMER BINARY] {}",
@@ -260,8 +265,8 @@ fn first_new_crash(
 fn has_new_crash(candidate: &RunMetadata, baseline: &RunMetadata) -> bool {
     candidate
         .crashes
-        .iter()
-        .any(|(job_id, message)| baseline.crashes.get(job_id) != Some(message))
+        .keys()
+        .any(|job_id| !baseline.crashes.contains_key(job_id))
 }
 
 fn first_failure_example(
@@ -624,6 +629,47 @@ mod tests {
         assert_eq!(rendered, snapshot);
     }
 
+    #[test]
+    fn crash_changes_are_matched_by_key_only() {
+        let baseline = metadata_with_crashes([("python-batch-0001", "panic at 0x111")]);
+        let candidate = metadata_with_crashes([("python-batch-0001", "panic at 0x222")]);
+
+        assert!(!has_new_crash(&candidate, &baseline));
+        assert!(first_new_crash(LANGS[0], &candidate, &baseline).is_none());
+    }
+
+    #[test]
+    fn new_crash_key_is_reported() {
+        let baseline = metadata_with_crashes([("python-batch-0001", "panic at 0x111")]);
+        let candidate = metadata_with_crashes([
+            ("python-batch-0001", "panic at 0x222"),
+            ("python-batch-0002", "panic at 0x333"),
+        ]);
+
+        assert!(has_new_crash(&candidate, &baseline));
+        let crash = first_new_crash(LANGS[0], &candidate, &baseline).expect("new crash");
+        assert_eq!(
+            crash.repro_command.as_deref(),
+            Some("shield run --lang python --wasmer [WASMER BINARY] python-batch-0002")
+        );
+    }
+
+    #[test]
+    fn flaky_count_is_not_included_in_total_tests_or_pass_rate() {
+        let mut metadata = RunMetadata::default();
+        metadata.counts = [
+            ("PASS".to_string(), 80),
+            ("FAIL".to_string(), 10),
+            ("TIMEOUT".to_string(), 10),
+            ("FLAKY".to_string(), 5),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(total_tests(&metadata), 100);
+        assert_eq!(pass_rate(&metadata), 80.0);
+    }
+
     fn read_snapshot(name: &str, rendered: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(name);
         if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
@@ -903,6 +949,15 @@ mod tests {
             before,
             after,
         }
+    }
+
+    fn metadata_with_crashes<const N: usize>(crashes: [(&str, &str); N]) -> RunMetadata {
+        let mut metadata = RunMetadata::default();
+        metadata.crashes = crashes
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .collect();
+        metadata
     }
 
     fn link(label: &str, url: &str) -> Link {
