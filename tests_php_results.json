@@ -15473,7 +15473,7 @@
   "ext/standard/tests/file/bug24482.phpt": "FAIL",
   "ext/standard/tests/file/bug26003.phpt": "PASS",
   "ext/standard/tests/file/bug26615.phpt": "PASS",
-  "ext/standard/tests/file/bug26938.phpt": "FAIL",
+  "ext/standard/tests/file/bug26938.phpt": "PASS",
   "ext/standard/tests/file/bug27508.phpt": "PASS",
   "ext/standard/tests/file/bug27619.phpt": "PASS",
   "ext/standard/tests/file/bug30362.phpt": "PASS",
