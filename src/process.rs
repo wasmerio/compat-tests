@@ -63,6 +63,8 @@ enum ProcessEvent {
     Closed,
 }
 
+const PANIC_CAPTURE_LINE_LIMIT: usize = 40;
+
 struct ProcessState {
     open_streams: usize,
     panic_capture: Option<PanicCapture>,
@@ -73,6 +75,7 @@ struct ProcessState {
 struct PanicCapture {
     stream: Stream,
     text: String,
+    lines: usize,
 }
 
 /// Runs a process with a given timeout and streams stdout/stderr to the caller in realtime
@@ -157,14 +160,13 @@ where
             humantime::format_duration(spec.timeout)
         )));
     }
+    if let Some(capture) = state.panic_capture {
+        return Err(ProcessError::RustCrash(capture.text));
+    }
     if status.success() {
         return Ok(());
     }
-    if let Some(capture) = state.panic_capture {
-        Err(ProcessError::RustCrash(capture.text))
-    } else {
-        Err(ProcessError::AbnormalExit(format_exit_status(status)))
-    }
+    Err(ProcessError::AbnormalExit(format_exit_status(status)))
 }
 
 fn format_exit_status(status: ExitStatus) -> String {
@@ -220,7 +222,11 @@ where
                 let mut text = String::new();
                 push_panic_line(&mut text, &pending);
                 push_panic_line(&mut text, &line);
-                state.panic_capture = Some(PanicCapture { stream, text });
+                state.panic_capture = Some(PanicCapture {
+                    stream,
+                    text,
+                    lines: 2,
+                });
                 current_line_already_captured = true;
             } else if starts_wasm_runtime_trap_header(&line) {
                 state.pending_runtime_trap = Some(line.clone());
@@ -233,14 +239,17 @@ where
         state.panic_capture = Some(PanicCapture {
             stream,
             text: String::new(),
+            lines: 0,
         });
     }
     if let Some(capture) = &mut state.panic_capture
         && capture.stream == stream
         && !is_tracing_json_line(&line)
         && !current_line_already_captured
+        && capture.lines < PANIC_CAPTURE_LINE_LIMIT
     {
         push_panic_line(&mut capture.text, &line);
+        capture.lines += 1;
     }
     log_output
         .write_line(stream_name(stream), &line)
@@ -470,6 +479,21 @@ mod tests {
     }
 
     #[test]
+    fn process_detects_rust_panic_even_when_exit_success() {
+        let err = run_process(
+            sh("printf \"thread 'main' panicked at boom\\nnext\\n\" 1>&2"),
+            |_, _| Ok(()),
+        )
+        .expect_err("panic");
+        match err {
+            ProcessError::RustCrash(text) => {
+                assert_eq!(text, "thread 'main' panicked at boom\nnext\n")
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn process_detects_stack_overflow_runtime_abort() {
         let err = run_process(
             sh("printf \"thread '<unknown>' has overflowed its stack\\nfatal runtime error: stack overflow, aborting\\n\" 1>&2; exit 134"),
@@ -603,6 +627,27 @@ mod tests {
         match err {
             ProcessError::RustCrash(text) => {
                 assert_eq!(text, "thread 'main' panicked at boom\n");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_panic_capture_stops_after_line_limit() {
+        let mut script = String::from("i=1; while [ \"$i\" -le 50 ]; do printf \"");
+        script.push_str("line-$i");
+        script.push_str("\\n\" 1>&2; i=$((i + 1)); done; exit 101");
+        let err = run_process(
+            sh(&format!("printf \"thread 'main' panicked at boom\\n\" 1>&2; {script}")),
+            |_, _| Ok(()),
+        )
+        .expect_err("panic");
+        match err {
+            ProcessError::RustCrash(text) => {
+                assert!(text.contains("thread 'main' panicked at boom"));
+                assert!(text.contains("line-39"));
+                assert!(!text.contains("line-40"));
+                assert!(!text.contains("line-50"));
             }
             other => panic!("unexpected error: {other:?}"),
         }

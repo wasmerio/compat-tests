@@ -7,7 +7,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use rayon::prelude::*;
 
-use super::{LangRunner, Mode, RunnerOpts, Status, TestJob, TestResult, TestRunOutput, Workspace};
+use super::{
+    LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput,
+    Workspace,
+};
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
 use crate::runtime::{RunSpec, RunTarget, Stream, WasmerRuntime};
@@ -219,7 +222,7 @@ impl PythonRunner {
         wasmer: &WasmerRuntime,
         job: &TestJob,
         _log: Option<&RunLog>,
-    ) -> Result<Vec<TestResult>> {
+    ) -> Result<TestRunOutput> {
         let mut parser = PythonProtocol::default();
         let result = wasmer.run(
             RunSpec {
@@ -240,24 +243,7 @@ impl PythonRunner {
                 Ok(())
             },
         );
-        match &result {
-            Ok(()) => {}
-            Err(ProcessError::AbnormalExit(message)) if !parser.has_results() => {
-                return Err(anyhow!(ProcessError::AbnormalExit(message.clone())));
-            }
-            Err(ProcessError::AbnormalExit(_)) => {}
-            Err(ProcessError::Timeout(_)) => {}
-            Err(ProcessError::RustCrash(message)) => {
-                return Err(anyhow!(ProcessError::RustCrash(message.clone())));
-            }
-            Err(ProcessError::Spawn(message)) => return Err(anyhow!(message.clone())),
-        }
-        Ok(reconcile_module_results(
-            &job.id,
-            &job.tests,
-            parser.finish(matches!(result, Err(ProcessError::Timeout(_))), &job.id),
-            matches!(result, Err(ProcessError::Timeout(_))),
-        ))
+        finish_module_capture(job, parser, result)
     }
 }
 
@@ -402,7 +388,7 @@ impl LangRunner for PythonRunner {
         log: Option<&RunLog>,
     ) -> Result<TestRunOutput> {
         let results = match mode {
-            Mode::Capture => self.run_module_capture(workspace, wasmer, job, log)?,
+            Mode::Capture => return self.run_module_capture(workspace, wasmer, job, log),
             Mode::Debug => {
                 let result = wasmer.run(
                     RunSpec {
@@ -521,6 +507,41 @@ fn reconcile_module_results(
         .into_iter()
         .map(|(id, status)| TestResult { id, status })
         .collect()
+}
+
+fn finish_module_capture(
+    job: &TestJob,
+    parser: PythonProtocol,
+    result: std::result::Result<(), ProcessError>,
+) -> Result<TestRunOutput> {
+    let mut issues = vec![];
+    match &result {
+        Ok(()) => {}
+        Err(ProcessError::AbnormalExit(message)) if !parser.has_results() => {
+            return Err(anyhow!(ProcessError::AbnormalExit(message.clone())));
+        }
+        Err(ProcessError::AbnormalExit(_)) => {}
+        Err(ProcessError::Timeout(_)) => {}
+        Err(ProcessError::RustCrash(message)) => {
+            if !parser.has_results() {
+                return Err(anyhow!(ProcessError::RustCrash(message.clone())));
+            }
+            issues.push(TestIssue {
+                id: job.id.clone(),
+                message: ProcessError::RustCrash(message.clone()).to_string(),
+            });
+        }
+        Err(ProcessError::Spawn(message)) => return Err(anyhow!(message.clone())),
+    }
+    Ok(TestRunOutput {
+        results: reconcile_module_results(
+            &job.id,
+            &job.tests,
+            parser.finish(matches!(result, Err(ProcessError::Timeout(_))), &job.id),
+            matches!(result, Err(ProcessError::Timeout(_))),
+        ),
+        issues,
+    })
 }
 
 fn patch_faulthandler_workarounds(testdir: &Path) -> Result<()> {
@@ -895,6 +916,42 @@ PASS mod.A
                     status: Status::Timeout,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn module_capture_keeps_results_and_reports_crash_issue() {
+        let job = TestJob {
+            id: "test.mod".into(),
+            tests: vec!["test.mod.A".into()],
+        };
+        let mut parser = PythonProtocol::default();
+        parser.feed(b"CASE test.mod.A\nFAIL test.mod.A\n");
+
+        let output = finish_module_capture(
+            &job,
+            parser,
+            Err(ProcessError::RustCrash(
+                "thread 'TokioTaskManager Thread Pool_thread_6' panicked at boom".into(),
+            )),
+        )
+        .expect("output");
+
+        assert_eq!(
+            output.results,
+            vec![TestResult {
+                id: "test.mod.A".into(),
+                status: Status::Fail,
+            }]
+        );
+        assert_eq!(
+            output.issues,
+            vec![TestIssue {
+                id: "test.mod".into(),
+                message:
+                    "crash: thread 'TokioTaskManager Thread Pool_thread_6' panicked at boom"
+                        .into(),
+            }]
         );
     }
 }
