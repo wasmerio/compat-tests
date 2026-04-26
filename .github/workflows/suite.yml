@@ -45,18 +45,23 @@ jobs:
           version="$(cargo run --quiet -- run --lang "${{ matrix.lang }}" --version)"
           echo "key=compat-cache-${{ runner.os }}-${{ matrix.lang }}-${version}" >> "$GITHUB_OUTPUT"
       - run: mkdir -p ".cache/${{ matrix.lang }}"
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
         with:
           path: .cache/${{ matrix.lang }}
           key: ${{ steps.cache-key.outputs.key }}
-      - env:
-          GH_TOKEN: ${{ github.token }}
-        run: >
+      # TODO: Pass GH_TOKEN to enable fast path for downloading a prebuilt main binary for wasmer
+      #       But keep in mind that it should only happen for non forks for security reasons
+      - run: >
           cargo run --quiet -- run
           --lang ${{ matrix.lang }}
           --wasmer-repo "https://github.com/${{ inputs.target_repo }}.git"
           --wasmer-ref "${{ inputs.target_sha }}"
           --compare-ref origin/main
+      - if: ${{ success() && inputs.target_repo == 'wasmerio/wasmer' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/${{ matrix.lang }}
+          key: ${{ steps.cache-key.outputs.key }}
       - if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -1,5 +1,5 @@
 name: compat-pr
-run-name: compat-pr [${{ inputs.target_sha }}]
+run-name: compat-pr [${{ inputs.results_branch }}]
 
 on:
   workflow_dispatch:
@@ -9,6 +9,8 @@ on:
       target_sha:
         required: true
       comment_pr_number:
+        required: true
+      results_branch:
         required: true
 
 jobs:
@@ -34,7 +36,7 @@ jobs:
       - id: publish
         continue-on-error: true
         env:
-          RESULTS_BRANCH: pr-${{ inputs.comment_pr_number }}
+          RESULTS_BRANCH: ${{ inputs.results_branch }}
         run: |
           commit=$(cargo run --quiet -- update-baseline \
             --branch "${RESULTS_BRANCH}" \
