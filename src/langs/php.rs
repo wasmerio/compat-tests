@@ -22,19 +22,23 @@ impl PhpRunner {
         name: "php",
         git_repo: "https://github.com/wasix-org/php.git",
         git_ref: "6dd6dd1c7e409b8e9dcba8a8d6f9b7b5f944cc9e",
-        wasmer_package: Some("php/php-32"),
+        wasmer_package: Some("artembde9fd8b1a18420e/php-32-debug@8.3.2104"),
         wasmer_package_warmup_args: Some(&["-r", "echo \"ok\\n\";"]),
         wasmer_flags: &[],
         docker_compose: None,
     };
 
-    fn result_file(workspace: &Workspace, job: &TestJob) -> PathBuf {
+    fn job_run_dir(workspace: &Workspace, job: &TestJob) -> PathBuf {
         let mut hasher = DefaultHasher::new();
         job.id.hash(&mut hasher);
         job.tests.hash(&mut hasher);
         workspace
             .work_dir
-            .join(format!("php-results-{:016x}.tsv", hasher.finish()))
+            .join(format!("php-job-{:016x}", hasher.finish()))
+    }
+
+    fn result_file(workspace: &Workspace, job: &TestJob) -> PathBuf {
+        Self::job_run_dir(workspace, job).join("results.tsv")
     }
 
     fn run_tests_path(workspace: &Workspace) -> PathBuf {
@@ -46,7 +50,8 @@ impl PhpRunner {
     }
 
     // TODO: That is common for all langs - move to higher levels
-    fn volume_flags(workspace: &Workspace) -> Vec<String> {
+    fn volume_flags(workspace: &Workspace, job: &TestJob) -> Vec<String> {
+        let job_run_dir = Self::job_run_dir(workspace, job);
         vec![
             "--volume".into(),
             format!(
@@ -57,8 +62,8 @@ impl PhpRunner {
             "--volume".into(),
             format!(
                 "{}:{}",
-                workspace.work_dir.display(),
-                workspace.work_dir.display()
+                job_run_dir.display(),
+                job_run_dir.display()
             ),
         ]
     }
@@ -100,7 +105,8 @@ impl PhpRunner {
                 bail!("php test not found: {}", test_path.display());
             }
         }
-        fs::create_dir_all(&workspace.work_dir)?;
+        let job_run_dir = Self::job_run_dir(workspace, job);
+        fs::create_dir_all(&job_run_dir)?;
         let result_file = Self::result_file(workspace, job);
         let _ = fs::remove_file(&result_file);
         let mut args = vec![
@@ -121,7 +127,7 @@ impl PhpRunner {
                 target: RunTarget::Package(
                     Self::OPTS.wasmer_package.expect("php package").to_string(),
                 ),
-                flags: Self::volume_flags(workspace),
+                flags: Self::volume_flags(workspace, job),
                 args,
                 timeout: None,
             },
