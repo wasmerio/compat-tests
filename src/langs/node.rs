@@ -248,20 +248,49 @@ fn parse_tap_results(path: &Path) -> Result<BTreeMap<String, Status>> {
         return Ok(BTreeMap::new());
     }
     let mut results = BTreeMap::new();
-    for line in fs::read_to_string(path)?.lines() {
-        let line = line.trim();
+    let mut current = None;
+    for raw_line in fs::read_to_string(path)?.lines() {
+        let line = raw_line.trim();
         if let Some(id) = line.strip_prefix("ok ").and_then(parse_tap_id) {
+            flush_tap_result(&mut results, &mut current);
             let status = if line.contains(" # skip ") {
                 Status::Skip
             } else {
                 Status::Pass
             };
-            results.insert(id, status);
-        } else if let Some(id) = line.strip_prefix("not ok ").and_then(parse_tap_id) {
-            results.insert(id, Status::Fail);
+            current = Some((id, status, false));
+            continue;
+        }
+        if let Some(id) = line.strip_prefix("not ok ").and_then(parse_tap_id) {
+            flush_tap_result(&mut results, &mut current);
+            current = Some((id, Status::Fail, false));
+            continue;
+        }
+        if let Some((_, status, expect_stack_line)) = current.as_mut() {
+            if *expect_stack_line {
+                if line == "timeout" {
+                    *status = Status::Timeout;
+                }
+                *expect_stack_line = false;
+            } else if line == "stack: |-" {
+                *expect_stack_line = true;
+            }
+        }
+        if line == "..." {
+            flush_tap_result(&mut results, &mut current);
         }
     }
+    flush_tap_result(&mut results, &mut current);
     Ok(results)
+}
+
+fn flush_tap_result(
+    results: &mut BTreeMap<String, Status>,
+    current: &mut Option<(String, Status, bool)>,
+) {
+    if let Some((id, status, _)) = current.take() {
+        results.insert(id, status);
+    }
 }
 
 fn parse_tap_id(line: &str) -> Option<String> {
@@ -438,6 +467,31 @@ not ok 3 parallel/test-fail.js
         assert_eq!(results["parallel/test-pass.js"], Status::Pass);
         assert_eq!(results["parallel/test-skip.js"], Status::Skip);
         assert_eq!(results["parallel/test-fail.js"], Status::Fail);
+    }
+
+    #[test]
+    fn parses_tap_timeout_results() {
+        let dir = tempdir::TempDir::new("node-tap-timeout").unwrap();
+        let path = dir.path().join("results.tap");
+        fs::write(
+            &path,
+            "\
+TAP version 13
+1..1
+not ok 1 parallel/test-timeout.js
+  ---
+  duration_ms: 3065.85500
+  severity: fail
+  exitcode: 143
+  stack: |-
+    timeout
+  ...
+",
+        )
+        .unwrap();
+
+        let results = parse_tap_results(&path).unwrap();
+        assert_eq!(results["parallel/test-timeout.js"], Status::Timeout);
     }
 
     #[test]
