@@ -1,11 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 
-use crate::reports::{RunMetadata, load_metadata, load_status};
-use crate::verdict::{ChangeKind, classify_change_kind};
+use crate::git::file_json;
+use crate::reports::{load_metadata, load_status, RunMetadata};
+use crate::verdict::{classify_change_kind, ChangeKind};
+
+const BASELINE_REF: &str = "HEAD";
 
 #[derive(Args)]
 pub struct UpdateBaselineArgs {
@@ -105,6 +108,15 @@ struct SummaryDelta {
 }
 
 fn commit_message(source_dir: &Path, files: &[String]) -> Result<CommitMessage> {
+    commit_message_at_ref(Path::new("."), BASELINE_REF, source_dir, files)
+}
+
+fn commit_message_at_ref(
+    baseline_repo: &Path,
+    baseline_ref: &str,
+    source_dir: &Path,
+    files: &[String],
+) -> Result<CommitMessage> {
     let metadata = files
         .iter()
         .find(|file| file.ends_with("_summary.json"))
@@ -112,8 +124,8 @@ fn commit_message(source_dir: &Path, files: &[String]) -> Result<CommitMessage> 
     let metadata_path = source_dir.join(metadata);
     let metadata = load_metadata(&metadata_path)
         .with_context(|| format!("parse {}", metadata_path.display()))?;
-    let change_kind = baseline_change_kind(source_dir, files)?;
-    let delta = summary_delta(source_dir, files)?;
+    let change_kind = baseline_change_kind(baseline_repo, baseline_ref, source_dir, files)?;
+    let delta = summary_delta(baseline_repo, baseline_ref, source_dir, files)?;
     let target = if metadata.wasmer.git_ref.is_empty() {
         metadata.wasmer.commit
     } else if metadata.wasmer.commit.is_empty() {
@@ -132,7 +144,12 @@ fn commit_message(source_dir: &Path, files: &[String]) -> Result<CommitMessage> 
     })
 }
 
-fn baseline_change_kind(source_dir: &Path, files: &[String]) -> Result<ChangeKind> {
+fn baseline_change_kind(
+    baseline_repo: &Path,
+    baseline_ref: &str,
+    source_dir: &Path,
+    files: &[String],
+) -> Result<ChangeKind> {
     let mut saw_improvement = false;
     for summary_file in files.iter().filter(|file| file.ends_with("_summary.json")) {
         let runner = summary_file
@@ -140,17 +157,11 @@ fn baseline_change_kind(source_dir: &Path, files: &[String]) -> Result<ChangeKin
             .and_then(|name| name.strip_suffix("_summary.json"))
             .ok_or_else(|| anyhow::anyhow!("invalid summary filename: {summary_file}"))?;
         let results_file = format!("tests_{runner}_results.json");
-        let baseline_metadata = if Path::new(summary_file).is_file() {
-            load_metadata(Path::new(summary_file))?
-        } else {
-            RunMetadata::default()
-        };
+        let baseline_metadata =
+            file_json(baseline_repo, baseline_ref, summary_file)?.unwrap_or_default();
         let candidate_metadata = load_metadata(&source_dir.join(summary_file))?;
-        let baseline_status = if Path::new(&results_file).is_file() {
-            load_status(Path::new(&results_file))?
-        } else {
-            Default::default()
-        };
+        let baseline_status =
+            file_json(baseline_repo, baseline_ref, &results_file)?.unwrap_or_default();
         let candidate_status = load_status(&source_dir.join(&results_file))?;
         match classify_change_kind(
             &baseline_status,
@@ -170,15 +181,16 @@ fn baseline_change_kind(source_dir: &Path, files: &[String]) -> Result<ChangeKin
     })
 }
 
-fn summary_delta(source_dir: &Path, files: &[String]) -> Result<SummaryDelta> {
+fn summary_delta(
+    baseline_repo: &Path,
+    baseline_ref: &str,
+    source_dir: &Path,
+    files: &[String],
+) -> Result<SummaryDelta> {
     let mut delta = SummaryDelta::default();
     for file in files.iter().filter(|file| file.ends_with("_summary.json")) {
         let new_metadata = load_metadata(&source_dir.join(file))?;
-        let old_metadata = if Path::new(file).is_file() {
-            load_metadata(Path::new(file))?
-        } else {
-            RunMetadata::default()
-        };
+        let old_metadata = file_json(baseline_repo, baseline_ref, file)?.unwrap_or_default();
         delta.pass += count_delta(&old_metadata, &new_metadata, "PASS");
         delta.fail += count_delta(&old_metadata, &new_metadata, "FAIL");
         delta.timeout += count_delta(&old_metadata, &new_metadata, "TIMEOUT");
@@ -252,23 +264,23 @@ fn run(mut cmd: Command, context: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SummaryDelta, format_change_kind, format_delta};
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
+
+    use tempdir::TempDir;
+
+    use super::{commit_message_at_ref, format_change_kind, format_delta, SummaryDelta};
     use crate::verdict::ChangeKind;
 
     #[test]
     fn classifies_regression_when_failures_increase() {
-        assert_eq!(
-            format_change_kind(ChangeKind::Regression),
-            "REGRESSION"
-        );
+        assert_eq!(format_change_kind(ChangeKind::Regression), "REGRESSION");
     }
 
     #[test]
     fn classifies_improvement_when_failures_drop() {
-        assert_eq!(
-            format_change_kind(ChangeKind::Improvement),
-            "IMPROVEMENT"
-        );
+        assert_eq!(format_change_kind(ChangeKind::Improvement), "IMPROVEMENT");
     }
 
     #[test]
@@ -288,5 +300,76 @@ mod tests {
             }),
             "Delta: PASS +4, FAIL -2, TIMEOUT +0, FLAKY +1, CRASHES -3"
         );
+    }
+
+    #[test]
+    fn commit_message_compares_against_head_after_worktree_is_overwritten() {
+        let repo = TempDir::new("baseline-repo").expect("repo tempdir");
+        init_git_repo(repo.path());
+        write_baseline_files(repo.path(), 1, 0, "PASS");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "baseline"]);
+
+        let candidate = TempDir::new("candidate-baseline").expect("candidate tempdir");
+        write_baseline_files(candidate.path(), 0, 1, "FAIL");
+
+        // update-baseline copies files before composing the commit message; the
+        // old baseline must still come from HEAD, not this overwritten worktree.
+        write_baseline_files(repo.path(), 0, 1, "FAIL");
+
+        let files = vec![
+            "tests_mock_results.json".to_string(),
+            "tests_mock_summary.json".to_string(),
+        ];
+        let message =
+            commit_message_at_ref(repo.path(), "HEAD", candidate.path(), &files).expect("message");
+
+        assert_eq!(message.subject, "Baseline updated - REGRESSION");
+        assert!(message.body.contains("Delta: PASS -1, FAIL +1"));
+    }
+
+    fn init_git_repo(repo: &Path) {
+        git(repo, &["init"]);
+    }
+
+    fn write_baseline_files(dir: &Path, pass: usize, fail: usize, status: &str) {
+        fs::write(
+            dir.join("tests_mock_results.json"),
+            format!("{{\n  \"test\": \"{status}\"\n}}\n"),
+        )
+        .expect("write results");
+        fs::write(
+            dir.join("tests_mock_summary.json"),
+            format!(
+                r#"{{
+  "wasmer": {{
+    "repo": "https://github.com/wasmerio/wasmer.git",
+    "commit": "abc123"
+  }},
+  "counts": {{
+    "PASS": {pass},
+    "FAIL": {fail},
+    "TIMEOUT": 0,
+    "FLAKY": 0
+  }},
+  "crashes": {{}}
+}}
+"#
+            ),
+        )
+        .expect("write summary");
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .env("GIT_AUTHOR_NAME", "shield-test")
+            .env("GIT_AUTHOR_EMAIL", "shield-test@example.com")
+            .env("GIT_COMMITTER_NAME", "shield-test")
+            .env("GIT_COMMITTER_EMAIL", "shield-test@example.com")
+            .status()
+            .expect("spawn git");
+        assert!(status.success(), "git {args:?} failed with {status}");
     }
 }
