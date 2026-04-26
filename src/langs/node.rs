@@ -372,21 +372,31 @@ fn node_crash_issue(result: &CurrentTapResult) -> Option<String> {
         .map(|crash| format!("crash: {crash}"))
 }
 
-fn contains_node_wrapper_reported_wasmer_crash_text(text: &str) -> bool {
-    extract_node_wrapper_reported_wasmer_crash_text(text).is_some()
-}
-
 fn extract_node_wrapper_reported_wasmer_crash_text(text: &str) -> Option<String> {
     text.lines()
         .rev()
-        .find(|line| {
-            (line.contains("node-wrapper-") || line.contains("node_via_wasmer.sh"))
-                && (line.contains("Segmentation fault")
-                    || line.contains("Trace/breakpoint trap")
-                    || line.contains("core dumped")
-                    || line.contains("Aborted"))
-        })
-        .map(|line| format!("{line}\n"))
+        .find_map(normalize_node_wrapper_reported_wasmer_crash_text)
+}
+
+fn normalize_node_wrapper_reported_wasmer_crash_text(line: &str) -> Option<String> {
+    if !(line.contains("node-wrapper-") || line.contains("node_via_wasmer.sh")) {
+        return None;
+    }
+    let signal = [
+        "Segmentation fault",
+        "Trace/breakpoint trap",
+        "Aborted",
+        "Illegal instruction",
+        "Bus error",
+    ]
+    .into_iter()
+    .find(|signal| line.contains(signal))?;
+    let mut text = signal.to_string();
+    if line.contains("core dumped") {
+        text.push_str(" (core dumped)");
+    }
+    text.push('\n');
+    Some(text)
 }
 
 fn parse_tap_id(line: &str) -> Option<String> {
@@ -645,12 +655,19 @@ not ok 1 parallel/test-crash.js
 
     #[test]
     fn detects_node_wrapper_reported_wasmer_crash_text() {
-        assert!(contains_node_wrapper_reported_wasmer_crash_text(
-            "/tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run"
-        ));
-        assert!(!contains_node_wrapper_reported_wasmer_crash_text(
-            "AssertionError [ERR_ASSERTION]: ifError got unwanted exception"
-        ));
+        assert_eq!(
+            extract_node_wrapper_reported_wasmer_crash_text(
+                "/tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run"
+            )
+            .as_deref(),
+            Some("Segmentation fault (core dumped)\n")
+        );
+        assert_eq!(
+            extract_node_wrapper_reported_wasmer_crash_text(
+                "AssertionError [ERR_ASSERTION]: ifError got unwanted exception"
+            ),
+            None
+        );
     }
 
     #[test]
@@ -673,7 +690,7 @@ not ok 1 parallel/test-crash.js
 
         assert_eq!(
             issue,
-            "crash:     /tmp/node-wrapper-123.sh: line 12: 79368 Segmentation fault      (core dumped) '/tmp/wasmer' run\n"
+            "crash: Segmentation fault (core dumped)\n"
         );
     }
 
