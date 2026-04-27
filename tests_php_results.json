@@ -16470,7 +16470,7 @@
   "ext/standard/tests/general_functions/getopt_008.phpt": "PASS",
   "ext/standard/tests/general_functions/getopt_009.phpt": "PASS",
   "ext/standard/tests/general_functions/getrusage.phpt": "PASS",
-  "ext/standard/tests/general_functions/getrusage_basic.phpt": "FAIL",
+  "ext/standard/tests/general_functions/getrusage_basic.phpt": "PASS",
   "ext/standard/tests/general_functions/getservbyname_basic.phpt": "PASS",
   "ext/standard/tests/general_functions/getservbyport_basic.phpt": "FAIL",
   "ext/standard/tests/general_functions/getservbyport_variation1.phpt": "FAIL",
