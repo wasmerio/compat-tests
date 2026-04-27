@@ -489,6 +489,10 @@ fn write_node_wrapper(
     let mut script = String::from(
         "#!/usr/bin/env bash\nset -euo pipefail\nchild=\"\"\ncleanup() {\n  if [[ -n \"$child\" ]]; then\n    kill -KILL \"$child\" 2>/dev/null || true\n  fi\n}\ntrap cleanup TERM INT ABRT\n",
     );
+    script.push_str("\ntest_serial_base=${TEST_SERIAL_ID:-");
+    script.push_str(&shell_quote(test_serial_id));
+    script
+        .push_str("}\ntest_serial_id=\"${test_serial_base}-${BASHPID:-$$}-${RANDOM}-${RANDOM}\"\n");
     script.push_str(&shell_quote(&wasmer_bin.display().to_string()));
     script.push_str(" run --registry ");
     script.push_str(&shell_quote(crate::runtime::WASMER_REGISTRY));
@@ -497,8 +501,7 @@ fn write_node_wrapper(
         script.push(' ');
         script.push_str(&shell_quote(flag));
     }
-    script.push_str(" --env ");
-    script.push_str(&shell_quote(&format!("TEST_SERIAL_ID={test_serial_id}")));
+    script.push_str(" --env \"TEST_SERIAL_ID=${test_serial_id}\"");
     script.push_str(" --volume ");
     script.push_str(&shell_quote(&format!(
         "{}:{}",
