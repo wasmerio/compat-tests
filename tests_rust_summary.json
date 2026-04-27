@@ -3,19 +3,19 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 995,
-    "FLAKY": 11,
+    "FAIL": 1003,
+    "FLAKY": 15,
     "PASS": 20813,
-    "SKIP": 81,
+    "SKIP": 73,
     "TIMEOUT": 0
   },
   "crashes": {
     "root::rustc_data_structures::rustc_data_structures-69f87dbf04f21981": "crash: Thread 2 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __pthread_exit (rustc_data_structures-4543a88814e4fb8c.wasm[12989]:0xffffffff)\n    at __wasi_thread_start_C (rustc_data_structures-4543a88814e4fb8c.wasm[12990]:0xffffffff)\n    at wasi_thread_start (rustc_data_structures-4543a88814e4fb8c.wasm[13007]:0xffffffff)\n",
-    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: Thread 16 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool-7ea493aa4c91dc07.wasm[15807]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-7ea493aa4c91dc07.wasm[15808]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-7ea493aa4c91dc07.wasm[15825]:0xffffffff)\n"
+    "root::rustc_thread_pool::rustc_thread_pool-e4a26b9bf7b3ed47": "crash: Thread 13 of process 1 failed with runtime error: RuntimeError: out of bounds memory access\n    at __do_orphaned_stdio_locks (rustc_thread_pool-7ea493aa4c91dc07.wasm[15803]:0xffffffff)\n    at __pthread_exit (rustc_thread_pool-7ea493aa4c91dc07.wasm[15807]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-7ea493aa4c91dc07.wasm[15808]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-7ea493aa4c91dc07.wasm[15825]:0xffffffff)\nThread 17 of process 1 failed with runtime error: RuntimeError: uninitialized element\n    at __pthread_exit (rustc_thread_pool-7ea493aa4c91dc07.wasm[15807]:0xffffffff)\n    at __wasi_thread_start_C (rustc_thread_pool-7ea493aa4c91dc07.wasm[15808]:0xffffffff)\n    at wasi_thread_start (rustc_thread_pool-7ea493aa4c91dc07.wasm[15825]:0xffffffff)\n"
   },
   "run": {
-    "finished_at": "2026-04-27T05:43:08Z",
-    "started_at": "2026-04-27T04:46:50Z"
+    "finished_at": "2026-04-27T15:17:02Z",
+    "started_at": "2026-04-27T14:18:19Z"
   },
   "rust": {
     "commit": "v2025-11-07.1+rust-1.90"
