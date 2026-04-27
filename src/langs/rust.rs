@@ -12,8 +12,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 use super::{
-    LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput,
-    Workspace,
+    LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace,
 };
 use crate::process::{ProcessError, extract_runtime_crash_text};
 use crate::run_log::RunLog;
@@ -1993,7 +1992,8 @@ fn rust_run_issues(
     stderr: &str,
     result: &std::result::Result<(), ProcessError>,
 ) -> Vec<TestIssue> {
-    let saw_statuses = !parse_rust_statuses(stdout).is_empty() || !parse_rust_statuses(stderr).is_empty();
+    let saw_statuses =
+        !parse_rust_statuses(stdout).is_empty() || !parse_rust_statuses(stderr).is_empty();
     if !saw_statuses {
         return vec![];
     }
@@ -2048,7 +2048,11 @@ fn record_rust_status(statuses: &mut BTreeMap<String, Status>, name: &str, statu
         .entry(name.to_string())
         .and_modify(|current| {
             if *current != Status::Skip {
-                *current = if status == Status::Skip { Status::Skip } else { status };
+                *current = if status == Status::Skip {
+                    Status::Skip
+                } else {
+                    status
+                };
             }
         })
         .or_insert(status);

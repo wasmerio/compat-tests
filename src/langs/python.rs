@@ -8,8 +8,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use rayon::prelude::*;
 
 use super::{
-    LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput,
-    Workspace,
+    LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace,
 };
 use crate::process::{ProcessError, write_stream};
 use crate::run_log::RunLog;
@@ -103,6 +102,10 @@ impl PythonRunner {
         workspace.checkout.join("Lib").join("test")
     }
 
+    fn host_lib_dir(workspace: &Workspace) -> PathBuf {
+        workspace.checkout.join("Lib")
+    }
+
     fn guest_test_dir(&self, wasmer: &WasmerRuntime) -> Result<&str> {
         if self.guest_test_dir.get().is_none() {
             let guest_dir = resolve_guest_test_dir(wasmer)?;
@@ -117,10 +120,13 @@ impl PythonRunner {
 
     fn volume_flag(&self, workspace: &Workspace, wasmer: &WasmerRuntime) -> Result<String> {
         let guest = self.guest_test_dir(wasmer)?;
+        let guest_lib = Path::new(guest)
+            .parent()
+            .ok_or_else(|| anyhow!("guest test dir has no parent: {guest}"))?;
         Ok(format!(
             "{}:{}",
-            Self::host_test_dir(workspace).display(),
-            guest
+            Self::host_lib_dir(workspace).display(),
+            guest_lib.display()
         ))
     }
 
@@ -948,9 +954,8 @@ PASS mod.A
             output.issues,
             vec![TestIssue {
                 id: "test.mod".into(),
-                message:
-                    "crash: thread 'TokioTaskManager Thread Pool_thread_6' panicked at boom"
-                        .into(),
+                message: "crash: thread 'TokioTaskManager Thread Pool_thread_6' panicked at boom"
+                    .into(),
             }]
         );
     }

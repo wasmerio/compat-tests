@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,8 +20,7 @@ use crate::run_log::RunLog;
 const WASMER_REPO: &str = "https://github.com/wasmerio/wasmer.git";
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 pub const WASMER_REGISTRY: &str = "wasmer.io";
-// TODO: Re-enable prebuilt main Wasmer once the temporary EdgeJS N-API patch is upstreamed.
-const USE_PREBUILT_MAIN_WASMER: bool = false;
+const USE_PREBUILT_MAIN_WASMER: bool = true;
 
 pub struct WasmerRuntime {
     binary: PathBuf,
@@ -120,7 +119,6 @@ impl WasmerRuntime {
 
                 let checkout = ensure_checkout(&work_root.join("wasmer"), &repo, &git_ref)?;
                 update_wasmer_submodules(&checkout)?;
-                apply_wasmer_compat_patches(&checkout)?;
                 tracing::info!(path = %checkout.display(), "building Wasmer from source");
                 run_command(
                     Command::new("cargo")
@@ -246,54 +244,6 @@ fn infer_wasmer_checkout_from_bin(wasmer_bin: &Path) -> Option<PathBuf> {
         .ancestors()
         .nth(3)
         .map(Path::to_path_buf)
-}
-
-fn apply_wasmer_compat_patches(checkout: &Path) -> Result<bool> {
-    let patch_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("patches");
-    let napi = checkout.join("lib").join("napi");
-    if !napi.join(".git").exists() {
-        tracing::warn!(
-            path = %napi.display(),
-            "skipping Wasmer N-API patch: lib/napi checkout missing"
-        );
-        return Ok(false);
-    }
-
-    apply_patch_idempotent(&napi, &patch_dir.join("wasmer-napi-edgejs.patch"))
-}
-
-fn apply_patch_idempotent(cwd: &Path, patch: &Path) -> Result<bool> {
-    let mut check = Command::new("git");
-    check
-        .args(["apply", "--check"])
-        .arg(patch)
-        .current_dir(cwd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if check.status()?.success() {
-        tracing::info!(patch = %patch.display(), "applying temporary Wasmer N-API patch");
-        let mut apply = Command::new("git");
-        apply.arg("apply").arg(patch).current_dir(cwd);
-        run_command(&mut apply)?;
-        return Ok(true);
-    }
-
-    let mut reverse = Command::new("git");
-    reverse
-        .args(["apply", "--reverse", "--check"])
-        .arg(patch)
-        .current_dir(cwd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    if reverse.status()?.success() {
-        tracing::debug!(patch = %patch.display(), "temporary Wasmer N-API patch already applied");
-        return Ok(false);
-    }
-
-    bail!(
-        "failed to apply temporary Wasmer N-API patch {}",
-        patch.display()
-    );
 }
 
 fn try_download_prebuilt_main_wasmer(work_root: &Path) -> Result<Option<(PathBuf, String)>> {

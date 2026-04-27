@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 
 use crate::git::file_json;
-use crate::reports::{load_metadata, load_status, RunMetadata};
-use crate::verdict::{classify_change_kind, ChangeKind};
+use crate::reports::{RunMetadata, load_metadata, load_status};
+use crate::verdict::{ChangeKind, classify_change_kind};
 
 const BASELINE_REF: &str = "HEAD";
 
@@ -270,7 +270,7 @@ mod tests {
 
     use tempdir::TempDir;
 
-    use super::{commit_message_at_ref, format_change_kind, format_delta, SummaryDelta};
+    use super::{SummaryDelta, commit_message_at_ref, format_change_kind, format_delta};
     use crate::verdict::ChangeKind;
 
     #[test]

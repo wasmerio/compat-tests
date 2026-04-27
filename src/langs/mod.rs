@@ -126,7 +126,10 @@ pub trait LangRunner: Send + Sync {
 pub mod tests {
     use anyhow::Result;
 
-    use super::{LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput, Workspace};
+    use super::{
+        LangRunner, Mode, RunnerOpts, Status, TestIssue, TestJob, TestResult, TestRunOutput,
+        Workspace,
+    };
     use crate::process::ProcessError;
     use crate::run_log::RunLog;
     use crate::runtime::WasmerRuntime;

@@ -60,10 +60,11 @@ impl PhpRunner {
                 workspace.checkout.display()
             ),
             "--volume".into(),
+            format!("{}:{}", job_run_dir.display(), job_run_dir.display()),
+            "--env".into(),
             format!(
-                "{}:{}",
-                job_run_dir.display(),
-                job_run_dir.display()
+                "TEST_PHP_INFO_FILE={}",
+                job_run_dir.join("run-test-info.php").display()
             ),
         ]
     }
@@ -479,6 +480,11 @@ function compute_summary(): void"#,
     );
     replace_if_present(
         &mut text,
+        r#"    $info_file = __DIR__ . '/run-test-info.php';"#,
+        r#"    $info_file = getenv('TEST_PHP_INFO_FILE') ?: (__DIR__ . '/run-test-info.php');"#,
+    );
+    replace_if_present(
+        &mut text,
         r#"        $key = "$php => $dir";"#,
         r#"        $key = compat_command_key($php) . " => $dir";"#,
     );
@@ -675,5 +681,25 @@ mod tests {
             normalize_test_name(source_root, name),
             "# ext/pdo_sqlite/tests/common.phpt: ext/pdo/tests/bug_34630.phpt"
         );
+    }
+
+    #[test]
+    fn php_volume_flags_include_per_job_info_file() {
+        let workspace = super::Workspace {
+            output_dir: "/tmp/out".into(),
+            checkout: "/tmp/checkout".into(),
+            work_dir: "/tmp/work".into(),
+        };
+        let job = super::TestJob {
+            id: "php-batch-0001".into(),
+            tests: vec!["ext/standard/tests/general_functions/getrusage_basic.phpt".into()],
+        };
+        let flags = PhpRunner::volume_flags(&workspace, &job);
+
+        assert!(flags.iter().any(|flag| flag == "--env"));
+        assert!(flags.iter().any(
+            |flag| flag.starts_with("TEST_PHP_INFO_FILE=/tmp/work/php-job-")
+                && flag.ends_with("/run-test-info.php")
+        ));
     }
 }

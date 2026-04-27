@@ -48,7 +48,7 @@ impl NodeRunner {
         name: "node",
         git_repo: "https://github.com/nodejs/node.git",
         git_ref: "v24.13.1",
-        wasmer_package: Some("wasmer/edgejs"),
+        wasmer_package: Some("wasmer/edgejs@0.0.0-f57f970"),
         wasmer_package_warmup_args: Some(&["-e", "console.log('ok')"]),
         wasmer_flags: &["--experimental-napi"],
         docker_compose: None,
@@ -76,6 +76,13 @@ impl NodeRunner {
             .join(format!("node-results-{:016x}.tap", hasher.finish()))
     }
 
+    fn job_namespace(job: &TestJob) -> String {
+        let mut hasher = DefaultHasher::new();
+        job.id.hash(&mut hasher);
+        job.tests.hash(&mut hasher);
+        format!("compat-{:016x}", hasher.finish())
+    }
+
     fn ensure_wrapper(
         &self,
         workspace: &Workspace,
@@ -92,6 +99,7 @@ impl NodeRunner {
             workspace,
             Self::OPTS.wasmer_package.expect("node package"),
             Self::OPTS.wasmer_flags,
+            &Self::job_namespace(job),
         )?;
         Ok(path)
     }
@@ -141,7 +149,7 @@ impl NodeRunner {
             ProcessSpec {
                 program: "python3".into(),
                 args,
-                env: vec![],
+                env: vec![("TEST_SERIAL_ID".into(), Self::job_namespace(job).into())],
                 cwd: workspace.checkout.clone(),
                 // Let Node's own timeout handler write a TAP result before we
                 // kill the whole harness process.
@@ -461,6 +469,7 @@ fn write_node_wrapper(
     workspace: &Workspace,
     package: &str,
     flags: &[&str],
+    test_serial_id: &str,
 ) -> Result<()> {
     let wasmer_bin = wasmer.binary_path();
     let mut script = String::from(
@@ -474,6 +483,8 @@ fn write_node_wrapper(
         script.push(' ');
         script.push_str(&shell_quote(flag));
     }
+    script.push_str(" --env ");
+    script.push_str(&shell_quote(&format!("TEST_SERIAL_ID={test_serial_id}")));
     script.push_str(" --volume ");
     script.push_str(&shell_quote(&format!(
         "{}:{}",
@@ -880,5 +891,8 @@ not ok 1 parallel/test-assert.js
             NodeRunner::wrapper_path(&workspace, &a),
             NodeRunner::wrapper_path(&workspace, &b)
         );
+        assert_ne!(NodeRunner::job_namespace(&a), NodeRunner::job_namespace(&b));
+        assert!(NodeRunner::job_namespace(&a).starts_with("compat-"));
+        assert!(!NodeRunner::job_namespace(&a).contains('/'));
     }
 }
