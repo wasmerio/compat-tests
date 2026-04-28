@@ -2241,18 +2241,24 @@ fn executable_paths(build: &RustBuild) -> Result<Vec<PathBuf>> {
 
 fn target_for_wasm<'a>(targets: &'a [RustTarget], wasm: &Path) -> Option<&'a RustTarget> {
     let stem = normalized_stem(wasm);
-    targets.iter().find(|target| {
-        artifact_candidates(target).any(|name| {
-            let name = name.replace('-', "_");
-            stem == name || stem.starts_with(&format!("{name}_"))
+    targets
+        .iter()
+        .filter(|target| !target.build_only)
+        .find(|target| {
+            artifact_candidates(target).any(|name| {
+                let name = name.replace('-', "_");
+                stem == name || stem.starts_with(&format!("{name}_"))
+            })
         })
-    })
 }
 
 fn artifacts_from_target_dirs(targets: &[RustTarget]) -> Result<Vec<RustArtifact>> {
     let mut artifacts = Vec::new();
     let mut seen = BTreeSet::new();
     for target in targets {
+        if target.build_only {
+            continue;
+        }
         let deps = target
             .workspace_path
             .join("target")
@@ -2719,6 +2725,46 @@ mod tests {
         assert!(targets[1].build_only);
         assert_eq!(targets[2].package, "helper");
         assert!(targets[2].target_names.is_empty());
+    }
+
+    #[test]
+    fn root_compiletest_is_build_only() {
+        let json = br#"{
+          "packages": [
+            {"id":"path+file:///repo/src/tools/compiletest#compiletest@0.0.0","name":"compiletest","manifest_path":"/repo/src/tools/compiletest/Cargo.toml","targets":[{"name":"compiletest","test":true}]}
+          ]
+        }"#;
+        let targets = parse_metadata_targets("root", Path::new("/repo"), json).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].package, "compiletest");
+        assert!(targets[0].build_only);
+    }
+
+    #[test]
+    fn artifact_scan_ignores_build_only_targets() {
+        let dir = TempDir::new("rust-build-only-artifacts").unwrap();
+        let deps = dir
+            .path()
+            .join("target")
+            .join(TARGET)
+            .join("debug")
+            .join("deps");
+        fs::create_dir_all(&deps).unwrap();
+        fs::write(deps.join("compiletest-1111111111111111.wasm"), b"wasm").unwrap();
+        let targets = vec![RustTarget {
+            workspace: "root".into(),
+            workspace_path: dir.path().into(),
+            package: "compiletest".into(),
+            package_id: "path+file:///repo/src/tools/compiletest#compiletest@0.0.0".into(),
+            manifest_path: PathBuf::from("/repo/src/tools/compiletest/Cargo.toml"),
+            target_names: vec!["compiletest".into()],
+            build_only: true,
+        }];
+
+        assert!(artifacts_from_target_dirs(&targets).unwrap().is_empty());
+        assert!(
+            target_for_wasm(&targets, &deps.join("compiletest-1111111111111111.wasm")).is_none()
+        );
     }
 
     #[test]
