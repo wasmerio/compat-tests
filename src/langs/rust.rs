@@ -29,6 +29,10 @@ const WORKSPACE_ROOTS: &[(&str, &str)] = &[
 ];
 const BUILD_ONLY_PACKAGES: &[&str] = &["proc_macro", "std", "std_detect", "test", "unwind"];
 const LOCK_UPDATES: &[(&str, &str, &str)] = &[
+    (".", "curl@0.4.49", "0.4.48"),
+    (".", "getrandom@0.3.4", "0.3.3"),
+    (".", "home", "0.5.11"),
+    (".", "libloading@0.8.9", "0.8.8"),
     ("library/portable-simd", "wasm-bindgen", "0.2.100"),
     ("library/portable-simd", "wasm-bindgen-futures", "0.4.50"),
     ("library/portable-simd", "wasm-bindgen-test", "0.3.50"),
@@ -54,6 +58,9 @@ impl RustRunner {
         workspace: &Workspace,
         filter: Option<&str>,
     ) -> Result<Vec<RustTarget>> {
+        ensure_compat_std_fs_tests(workspace)?;
+        ensure_compat_std_io_tests(workspace)?;
+        ensure_compat_std_net_tests(workspace)?;
         let requested = filter.and_then(requested_package);
         let mut targets = BTreeMap::new();
         for (name, rel) in WORKSPACE_ROOTS {
@@ -90,6 +97,7 @@ impl RustRunner {
     }
 
     fn apply_required_fixups(&self, workspace: &Workspace) -> Result<RustSetup> {
+        ensure_required_submodules(workspace)?;
         apply_text_replacements(
             &workspace.checkout,
             &[
@@ -354,6 +362,22 @@ impl RustRunner {
                     &[(
                         "    let output = Command::new(env!(\"CARGO_BIN_EXE_linkchecker\"))\n        .current_dir(Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"tests\"))\n        .arg(dirname)\n        .output()\n        .unwrap();",
                         "    let output = Command::new(env!(\"CARGO_BIN_EXE_linkchecker\"))\n        .arg(Path::new(env!(\"CARGO_MANIFEST_DIR\")).join(\"tests\").join(dirname))\n        .output()\n        .unwrap();",
+                    )][..],
+                ),
+                // The Wasix rustc snapshot accepts the API but rejects the current stable const
+                // exposure check through hashbrown when building std directly with Cargo.
+                (
+                    "library/std/src/collections/hash/map.rs",
+                    &[(
+                        "#[rustc_const_stable(feature = \"const_collections_with_hasher\", since = \"1.85.0\")]",
+                        "#[rustc_const_unstable(feature = \"const_collections_with_hasher\", issue = \"none\")]",
+                    )][..],
+                ),
+                (
+                    "library/std/src/collections/hash/set.rs",
+                    &[(
+                        "#[rustc_const_stable(feature = \"const_collections_with_hasher\", since = \"1.85.0\")]",
+                        "#[rustc_const_unstable(feature = \"const_collections_with_hasher\", issue = \"none\")]",
                     )][..],
                 ),
             ],
@@ -751,6 +775,28 @@ struct MetadataTarget {
     test: bool,
 }
 
+fn ensure_required_submodules(workspace: &Workspace) -> Result<()> {
+    let required = ["library/backtrace"];
+    for path in required {
+        if workspace.checkout.join(path).join(".git").exists()
+            || workspace.checkout.join(path).join("src").is_dir()
+        {
+            continue;
+        }
+        tracing::info!(submodule = path, "initializing rust submodule");
+        let status = Command::new("git")
+            .args(["submodule", "update", "--init", "--depth", "1", "--"])
+            .arg(path)
+            .current_dir(&workspace.checkout)
+            .status()
+            .with_context(|| format!("initialize rust submodule {path}"))?;
+        if !status.success() {
+            bail!("git submodule update failed for {path}: {status}");
+        }
+    }
+    Ok(())
+}
+
 fn cargo_command(cwd: &Path, config: Option<&Path>) -> Command {
     let mut command = Command::new("cargo");
     command.arg(format!("+{}", rust_cargo_toolchain()));
@@ -763,6 +809,397 @@ fn cargo_command(cwd: &Path, config: Option<&Path>) -> Command {
         .env("CARGO_TERM_COLOR", "never")
         .env("RUSTC", wasix_rustc());
     command
+}
+
+fn ensure_compat_std_fs_tests(workspace: &Workspace) -> Result<()> {
+    let library = workspace.checkout.join("library");
+    if !library.join("Cargo.toml").is_file() {
+        return Ok(());
+    }
+
+    let crate_dir = library.join("compat-std-fs-tests");
+    fs::create_dir_all(crate_dir.join("src"))?;
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        r#"[package]
+name = "compat-std-fs-tests"
+version = "0.0.0"
+edition = "2024"
+"#,
+    )?;
+    fs::write(
+        crate_dir.join("src").join("lib.rs"),
+        r#"#![feature(assert_matches, char_max_len, core_io_borrowed_buf, io_error_uncategorized, read_buf)]
+
+pub mod char { pub use std::char::*; }
+pub mod env { pub use std::env::*; }
+pub mod fs { pub use std::fs::*; }
+pub mod hash { pub use std::hash::*; }
+pub mod io { pub use std::io::*; }
+pub mod mem { pub use std::mem::*; }
+pub mod os { pub use std::os::*; }
+pub mod panic { pub use std::panic::*; }
+pub mod path { pub use std::path::*; }
+pub mod str { pub use std::str::*; }
+pub mod sync { pub use std::sync::*; }
+pub mod thread { pub use std::thread::*; }
+pub mod time { pub use std::time::*; }
+
+pub mod rand {
+    pub trait RngCore {
+        fn fill_bytes(&mut self, dest: &mut [u8]);
+    }
+}
+
+pub mod test_helpers {
+    include!("../test_helpers.rs");
+}
+
+#[cfg(test)]
+mod fs_tests {
+    use crate::rand as rand;
+
+    include!("../fs_tests.rs");
+}
+"#,
+    )?;
+    fs::write(
+        crate_dir.join("test_helpers.rs"),
+        r#"use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::path::{Path, PathBuf};
+use crate::rand::RngCore;
+use crate::{env, fs, thread};
+
+static SEED: AtomicU64 = AtomicU64::new(0x1234_5678_9abc_def0);
+
+pub(crate) struct TestRng(u64);
+
+impl RngCore for TestRng {
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        for chunk in dest.chunks_mut(8) {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            chunk.copy_from_slice(&self.0.to_le_bytes()[..chunk.len()]);
+        }
+    }
+}
+
+pub(crate) fn test_rng() -> TestRng {
+    TestRng(SEED.fetch_add(0x9e37_79b9_7f4a_7c15, Ordering::Relaxed))
+}
+
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    pub fn join(&self, path: &str) -> PathBuf {
+        let TempDir(ref p) = *self;
+        p.join(path)
+    }
+
+    pub fn path(&self) -> &Path {
+        let TempDir(ref p) = *self;
+        p
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let TempDir(ref p) = *self;
+        let result = fs::remove_dir_all(p);
+        if !thread::panicking() {
+            result.unwrap();
+        }
+    }
+}
+
+#[track_caller]
+pub fn tmpdir() -> TempDir {
+    let p = env::temp_dir();
+    let id = SEED.fetch_add(1, Ordering::Relaxed);
+    let ret = p.join(&format!("rust-{id:x}"));
+    fs::create_dir(&ret).unwrap();
+    TempDir(ret)
+}
+"#,
+    )?;
+
+    let source = fs::read_to_string(library.join("std").join("src").join("fs").join("tests.rs"))?;
+    let mut tests = source.replace(
+        "#[cfg(unix)]\nuse crate::os::unix::fs::symlink as symlink_dir;\n#[cfg(unix)]\nuse crate::os::unix::fs::symlink as symlink_file;\n#[cfg(unix)]\nuse crate::os::unix::fs::symlink as junction_point;",
+        "#[cfg(unix)]\nuse crate::os::unix::fs::symlink as symlink_dir;\n#[cfg(unix)]\nuse crate::os::unix::fs::symlink as symlink_file;\n#[cfg(unix)]\nuse crate::os::unix::fs::symlink as junction_point;\n#[cfg(all(target_os = \"wasi\", target_vendor = \"wasmer\"))]\nfn symlink_file<P: AsRef<crate::path::Path>, Q: AsRef<crate::path::Path>>(_src: P, _dst: Q) -> crate::io::Result<()> { Err(crate::io::Error::new(crate::io::ErrorKind::Unsupported, \"symlink unsupported in compat std fs tests\")) }\n#[cfg(all(target_os = \"wasi\", target_vendor = \"wasmer\"))]\nfn symlink_dir<P: AsRef<crate::path::Path>, Q: AsRef<crate::path::Path>>(_src: P, _dst: Q) -> crate::io::Result<()> { Err(crate::io::Error::new(crate::io::ErrorKind::Unsupported, \"symlink unsupported in compat std fs tests\")) }\n#[cfg(all(target_os = \"wasi\", target_vendor = \"wasmer\"))]\nfn junction_point<P: AsRef<crate::path::Path>, Q: AsRef<crate::path::Path>>(_src: P, _dst: Q) -> crate::io::Result<()> { Err(crate::io::Error::new(crate::io::ErrorKind::Unsupported, \"junction unsupported in compat std fs tests\")) }",
+    );
+    tests = tests.replace(
+        "#[cfg(unix)]\nmacro_rules! error {",
+        "#[cfg(all(target_os = \"wasi\", target_vendor = \"wasmer\"))]\nmacro_rules! error {\n    ($e:expr, $s:expr) => {\n        error_contains!($e, $s)\n    };\n}\n\n#[cfg(unix)]\nmacro_rules! error {",
+    );
+    tests = tests.replace(
+        "    #[cfg(target_os = \"vxworks\")]\n    let invalid_options = \"invalid argument\";",
+        "    #[cfg(target_os = \"vxworks\")]\n    let invalid_options = \"invalid argument\";\n    #[cfg(all(target_os = \"wasi\", target_vendor = \"wasmer\"))]\n    let invalid_options = \"Invalid argument\";",
+    );
+    tests = tests.replace(
+        "#[test]\nfn dir_entry_debug() {",
+        "#[test]\n#[cfg(not(all(target_os = \"wasi\", target_vendor = \"wasmer\")))]\nfn dir_entry_debug() {",
+    );
+    fs::write(crate_dir.join("fs_tests.rs"), tests)?;
+
+    let manifest = library.join("Cargo.toml");
+    let mut text = fs::read_to_string(&manifest)?;
+    if !text.contains("\"compat-std-fs-tests\"") {
+        text = text.replace(
+            "  \"alloctests\",\n",
+            "  \"alloctests\",\n  \"compat-std-fs-tests\",\n",
+        );
+        fs::write(manifest, text)?;
+    }
+    Ok(())
+}
+
+fn ensure_compat_std_io_tests(workspace: &Workspace) -> Result<()> {
+    let library = workspace.checkout.join("library");
+    if !library.join("Cargo.toml").is_file() {
+        return Ok(());
+    }
+
+    let crate_dir = library.join("compat-std-io-tests");
+    fs::create_dir_all(crate_dir.join("src"))?;
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        r#"[package]
+name = "compat-std-io-tests"
+version = "0.0.0"
+edition = "2024"
+"#,
+    )?;
+    fs::write(
+        crate_dir.join("src").join("lib.rs"),
+        r#"#![feature(buf_read_has_data_left, can_vector, core_io_borrowed_buf, cursor_split, io_const_error, io_slice_as_bytes, maybe_uninit_slice, read_buf, seek_io_take_position, seek_stream_len, try_reserve_kind, write_all_vectored)]
+extern crate alloc;
+
+pub mod cmp { pub use std::cmp::*; }
+pub mod collections { pub use std::collections::*; }
+pub mod fmt { pub use std::fmt::*; }
+pub mod mem { pub use std::mem::*; }
+pub mod ops { pub use std::ops::*; }
+pub mod panic { pub use std::panic::*; }
+pub mod str { pub use std::str::*; }
+pub mod sync { pub use std::sync::*; }
+pub mod thread { pub use std::thread::*; }
+
+pub mod io {
+    pub use std::io::*;
+    pub const DEFAULT_BUF_SIZE: usize = 8192;
+    pub mod prelude { pub use std::io::prelude::*; }
+
+    #[cfg(test)] mod tests { include!("../io_tests.rs"); }
+    #[cfg(test)] mod buffered_tests { include!("../buffered_tests.rs"); }
+    #[cfg(test)] mod cursor_tests { include!("../cursor_tests.rs"); }
+    #[cfg(test)] mod stdio_tests { use crate::sync::{Arc, Mutex}; include!("../stdio_tests.rs"); }
+    #[cfg(test)] mod util_tests { include!("../util_tests.rs"); }
+    #[cfg(test)] mod copy_tests { include!("../copy_tests.rs"); }
+    #[cfg(test)] mod pipe_tests { include!("../pipe_tests.rs"); }
+}
+"#,
+    )?;
+
+    let io_dir = library.join("std").join("src").join("io");
+    let mut io_tests = fs::read_to_string(io_dir.join("tests.rs"))?;
+    io_tests = strip_annotated_functions(&io_tests, &["#[bench]"]);
+    io_tests = strip_test_functions_containing(
+        &io_tests,
+        &["default_read_to_end", "Cursor::split", "take.inner"],
+    );
+    fs::write(crate_dir.join("io_tests.rs"), io_tests)?;
+
+    let mut buffered_tests = fs::read_to_string(io_dir.join("buffered").join("tests.rs"))?;
+    buffered_tests = strip_annotated_functions(&buffered_tests, &["#[bench]"]);
+    buffered_tests = strip_test_functions_containing(&buffered_tests, &["initialized()"]);
+    fs::write(crate_dir.join("buffered_tests.rs"), buffered_tests)?;
+
+    let mut cursor_tests = fs::read_to_string(io_dir.join("cursor").join("tests.rs"))?;
+    cursor_tests = strip_annotated_functions(&cursor_tests, &["#[bench]"]);
+    fs::write(crate_dir.join("cursor_tests.rs"), cursor_tests)?;
+
+    fs::write(
+        crate_dir.join("stdio_tests.rs"),
+        fs::read_to_string(io_dir.join("stdio").join("tests.rs"))?,
+    )?;
+    fs::write(
+        crate_dir.join("util_tests.rs"),
+        fs::read_to_string(io_dir.join("util").join("tests.rs"))?,
+    )?;
+    fs::write(
+        crate_dir.join("copy_tests.rs"),
+        fs::read_to_string(io_dir.join("copy").join("tests.rs"))?,
+    )?;
+    fs::write(
+        crate_dir.join("pipe_tests.rs"),
+        fs::read_to_string(io_dir.join("pipe").join("tests.rs"))?,
+    )?;
+
+    ensure_library_member(&library, "compat-std-io-tests")?;
+    Ok(())
+}
+
+fn ensure_compat_std_net_tests(workspace: &Workspace) -> Result<()> {
+    let library = workspace.checkout.join("library");
+    if !library.join("Cargo.toml").is_file() {
+        return Ok(());
+    }
+
+    let crate_dir = library.join("compat-std-net-tests");
+    fs::create_dir_all(crate_dir.join("src"))?;
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        r#"[package]
+name = "compat-std-net-tests"
+version = "0.0.0"
+edition = "2024"
+"#,
+    )?;
+    fs::write(
+        crate_dir.join("src").join("lib.rs"),
+        r#"#![feature(core_io_borrowed_buf, io_error_uncategorized, ip_as_octets, read_buf, tcp_linger)]
+
+pub mod env { pub use std::env::*; }
+pub mod fmt { pub use std::fmt::*; }
+pub mod io { pub use std::io::*; pub mod prelude { pub use std::io::prelude::*; } }
+pub mod mem { pub use std::mem::*; }
+pub mod os { pub use std::os::*; }
+pub mod sync { pub use std::sync::*; }
+pub mod thread { pub use std::thread::*; }
+pub mod time { pub use std::time::*; }
+
+pub mod net {
+    pub use std::net::*;
+    pub use crate::io::ErrorKind;
+    pub mod test { include!("../net_test.rs"); }
+    #[cfg(test)] mod tcp_tests { include!("../tcp_tests.rs"); }
+    #[cfg(test)] mod udp_tests { include!("../udp_tests.rs"); }
+    #[cfg(test)] mod socket_addr_tests { include!("../socket_addr_tests.rs"); }
+    #[cfg(test)] mod ip_addr_tests { include!("../ip_addr_tests.rs"); }
+}
+"#,
+    )?;
+
+    let net_dir = library.join("std").join("src").join("net");
+    let net_test = fs::read_to_string(net_dir.join("test.rs"))?
+        .replace("#![allow(warnings)] // not used on emscripten\n\n", "");
+    fs::write(crate_dir.join("net_test.rs"), net_test)?;
+    fs::write(
+        crate_dir.join("tcp_tests.rs"),
+        fs::read_to_string(net_dir.join("tcp").join("tests.rs"))?,
+    )?;
+    let mut udp_tests = fs::read_to_string(net_dir.join("udp").join("tests.rs"))?;
+    udp_tests = strip_test_functions_containing(&udp_tests, &[".0.socket()"]);
+    fs::write(crate_dir.join("udp_tests.rs"), udp_tests)?;
+    fs::write(
+        crate_dir.join("socket_addr_tests.rs"),
+        fs::read_to_string(net_dir.join("socket_addr").join("tests.rs"))?,
+    )?;
+    fs::write(
+        crate_dir.join("ip_addr_tests.rs"),
+        fs::read_to_string(net_dir.join("ip_addr").join("tests.rs"))?,
+    )?;
+
+    ensure_library_member(&library, "compat-std-net-tests")?;
+    Ok(())
+}
+
+fn ensure_library_member(library: &Path, member: &str) -> Result<()> {
+    let manifest = library.join("Cargo.toml");
+    let mut text = fs::read_to_string(&manifest)?;
+    let quoted = format!("\"{member}\"");
+    if text.contains(&quoted) {
+        return Ok(());
+    }
+    let after_fs = "  \"compat-std-fs-tests\",\n";
+    if text.contains(after_fs) {
+        text = text.replace(after_fs, &format!("{after_fs}  \"{member}\",\n"));
+    } else {
+        text = text.replace(
+            "  \"alloctests\",\n",
+            &format!("  \"alloctests\",\n  \"{member}\",\n"),
+        );
+    }
+    fs::write(manifest, text)?;
+    Ok(())
+}
+
+fn strip_annotated_functions(source: &str, attrs: &[&str]) -> String {
+    strip_functions(source, |line| {
+        attrs.iter().any(|attr| line.trim_start().starts_with(attr))
+    })
+}
+
+fn strip_test_functions_containing(source: &str, needles: &[&str]) -> String {
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
+    let mut output = String::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if lines[index].trim_start().starts_with("#[test]") {
+            let mut fn_index = index + 1;
+            while fn_index < lines.len() && !lines[fn_index].trim_start().starts_with("fn ") {
+                fn_index += 1;
+            }
+            if fn_index < lines.len() {
+                let mut brace_depth = 0isize;
+                let mut saw_open = false;
+                let mut end = fn_index;
+                while end < lines.len() {
+                    brace_depth += lines[end].matches('{').count() as isize;
+                    brace_depth -= lines[end].matches('}').count() as isize;
+                    saw_open |= lines[end].contains('{');
+                    end += 1;
+                    if saw_open && brace_depth <= 0 {
+                        break;
+                    }
+                }
+                let block = lines[index..end].concat();
+                if needles.iter().any(|needle| block.contains(needle)) {
+                    index = end;
+                    continue;
+                }
+            }
+        }
+        output.push_str(lines[index]);
+        index += 1;
+    }
+    output
+}
+
+fn strip_functions(source: &str, should_consider: impl Fn(&str) -> bool) -> String {
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
+    let mut output = String::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if should_consider(lines[index]) {
+            let mut fn_index = index + 1;
+            while fn_index < lines.len() && !lines[fn_index].trim_start().starts_with("fn ") {
+                fn_index += 1;
+            }
+            if fn_index < lines.len() {
+                let mut brace_depth = 0isize;
+                let mut saw_open = false;
+                let mut end = fn_index;
+                while end < lines.len() {
+                    brace_depth += lines[end].matches('{').count() as isize;
+                    brace_depth -= lines[end].matches('}').count() as isize;
+                    saw_open |= lines[end].contains('{');
+                    end += 1;
+                    if saw_open && brace_depth <= 0 {
+                        break;
+                    }
+                }
+                index = end;
+                continue;
+            }
+        }
+        output.push_str(lines[index]);
+        index += 1;
+    }
+    output
 }
 
 fn rust_cargo_toolchain() -> String {
