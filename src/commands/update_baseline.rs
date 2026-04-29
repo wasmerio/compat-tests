@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use clap::Args;
 
 use crate::git::file_json;
-use crate::reports::{RunMetadata, load_metadata, load_status};
+use crate::reports::{RunMetadata, is_decision_runner, load_metadata, load_status};
 use crate::verdict::{ChangeKind, classify_change_kind};
 
 const BASELINE_REF: &str = "HEAD";
@@ -156,6 +156,9 @@ fn baseline_change_kind(
             .strip_prefix("tests_")
             .and_then(|name| name.strip_suffix("_summary.json"))
             .ok_or_else(|| anyhow::anyhow!("invalid summary filename: {summary_file}"))?;
+        if !is_decision_runner(runner) {
+            continue;
+        }
         let results_file = format!("tests_{runner}_results.json");
         let baseline_metadata =
             file_json(baseline_repo, baseline_ref, summary_file)?.unwrap_or_default();
@@ -270,7 +273,9 @@ mod tests {
 
     use tempdir::TempDir;
 
-    use super::{SummaryDelta, commit_message_at_ref, format_change_kind, format_delta};
+    use super::{
+        SummaryDelta, baseline_change_kind, commit_message_at_ref, format_change_kind, format_delta,
+    };
     use crate::verdict::ChangeKind;
 
     #[test]
@@ -328,18 +333,50 @@ mod tests {
         assert!(message.body.contains("Delta: PASS -1, FAIL +1"));
     }
 
+    #[test]
+    fn node_changes_do_not_decide_baseline_change_kind() {
+        let repo = TempDir::new("node-baseline-repo").expect("repo tempdir");
+        init_git_repo(repo.path());
+        write_runner_baseline_files(repo.path(), "node", 1, 0, "PASS");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "baseline"]);
+
+        let candidate = TempDir::new("node-candidate-baseline").expect("candidate tempdir");
+        write_runner_baseline_files(candidate.path(), "node", 0, 1, "FAIL");
+        let files = vec![
+            "tests_node_results.json".to_string(),
+            "tests_node_summary.json".to_string(),
+        ];
+
+        assert_eq!(
+            baseline_change_kind(repo.path(), "HEAD", candidate.path(), &files)
+                .expect("change kind"),
+            ChangeKind::NoChanges
+        );
+    }
+
     fn init_git_repo(repo: &Path) {
         git(repo, &["init"]);
     }
 
     fn write_baseline_files(dir: &Path, pass: usize, fail: usize, status: &str) {
+        write_runner_baseline_files(dir, "mock", pass, fail, status);
+    }
+
+    fn write_runner_baseline_files(
+        dir: &Path,
+        runner: &str,
+        pass: usize,
+        fail: usize,
+        status: &str,
+    ) {
         fs::write(
-            dir.join("tests_mock_results.json"),
+            dir.join(format!("tests_{runner}_results.json")),
             format!("{{\n  \"test\": \"{status}\"\n}}\n"),
         )
         .expect("write results");
         fs::write(
-            dir.join("tests_mock_summary.json"),
+            dir.join(format!("tests_{runner}_summary.json")),
             format!(
                 r#"{{
   "wasmer": {{

@@ -48,19 +48,6 @@ Traceback (most recent call last):
 AssertionError: False is not true
 ```
 
-### Example failed test from Node.js
-
-- Repro command: `shield run --lang node --wasmer [WASMER BINARY] parallel/test-fs-symlink.js`
-- Test source: [test-fs-symlink.js](https://github.com/nodejs/node/blob/main/test/parallel/test-fs-symlink.js)
-- Status: `PASS -> FAIL`
-- Full status file: [tests_node_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_node_results.json)
-
-```text
-AssertionError [ERR_ASSERTION]: expected symbolic link to exist
-    at testValidSymLink (/node/test/parallel/test-fs-symlink.js:81:10)
-    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
-```
-
 ### More changed tests
 
 - Python: [tests_python_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_python_results.json)

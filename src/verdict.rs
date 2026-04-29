@@ -6,9 +6,9 @@ use anyhow::{Result, bail};
 
 use crate::langs::Status;
 use crate::reports::{
-    RunMetadata, RunRegressions, load_metadata, load_metadata_at_ref, load_regressions,
-    load_status, load_status_at_ref, test_regressions_filename, test_results_filename,
-    test_summary_filename,
+    RunMetadata, RunRegressions, is_decision_runner, load_metadata, load_metadata_at_ref,
+    load_regressions, load_status, load_status_at_ref, test_regressions_filename,
+    test_results_filename, test_summary_filename,
 };
 
 const COMPARE_REF: &str = "origin/main";
@@ -43,14 +43,14 @@ pub struct Verdict {
     pub body: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VerdictKind {
     Regression,
     Improvement,
     NoChanges,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChangeKind {
     Regression,
     Improvement,
@@ -59,6 +59,7 @@ pub(crate) enum ChangeKind {
 
 struct LanguageVerdict {
     config: LangConfig,
+    decisive: bool,
     total_tests: usize,
     pass_rate_now: f64,
     delta_pass: isize,
@@ -128,13 +129,27 @@ fn collect_language_verdict(
     let baseline_metadata = load_metadata_at_ref(output_dir, COMPARE_REF, config.name)?;
     let baseline_status = load_status_at_ref(output_dir, COMPARE_REF, config.name)?;
 
-    let improvements = changed_tests(&baseline_status, &status, is_improvement);
-    let regressions = changed_tests(&baseline_status, &status, is_regression);
-    let crash_example = first_new_crash(config, &metadata, &baseline_metadata);
-    let failure_example = first_failure_example(config, &confirmed_regressions);
+    let decisive = is_decision_runner(config.name);
+    let improvements = if decisive {
+        changed_tests(&baseline_status, &status, is_improvement)
+    } else {
+        Vec::new()
+    };
+    let regressions = if decisive {
+        changed_tests(&baseline_status, &status, is_regression)
+    } else {
+        Vec::new()
+    };
+    let crash_example = decisive
+        .then(|| first_new_crash(config, &metadata, &baseline_metadata))
+        .flatten();
+    let failure_example = decisive
+        .then(|| first_failure_example(config, &confirmed_regressions))
+        .flatten();
 
     Ok(LanguageVerdict {
         config,
+        decisive,
         total_tests: total_tests(&metadata),
         pass_rate_now: pass_rate(&metadata),
         delta_pass: count_delta(&baseline_metadata, &metadata, "PASS"),
@@ -206,10 +221,15 @@ pub(crate) fn classify_change_kind(
 fn verdict_kind(languages: &[LanguageVerdict]) -> VerdictKind {
     if languages
         .iter()
+        .filter(|lang| lang.decisive)
         .any(|lang| lang.crash_example.is_some() || !lang.regressions.is_empty())
     {
         VerdictKind::Regression
-    } else if languages.iter().any(|lang| !lang.improvements.is_empty()) {
+    } else if languages
+        .iter()
+        .filter(|lang| lang.decisive)
+        .any(|lang| !lang.improvements.is_empty())
+    {
         VerdictKind::Improvement
     } else {
         VerdictKind::NoChanges
@@ -346,7 +366,7 @@ fn render_regression(
     let _ = writeln!(body);
     render_table(body, languages);
 
-    for lang in languages {
+    for lang in languages.iter().filter(|lang| lang.decisive) {
         if let Some(crash) = &lang.crash_example {
             let _ = writeln!(body);
             let _ = writeln!(body, "### Example crash from {}", lang.config.label);
@@ -378,7 +398,7 @@ fn render_regression(
         }
     }
 
-    for lang in languages {
+    for lang in languages.iter().filter(|lang| lang.decisive) {
         if let Some(example) = &lang.failure_example {
             let _ = writeln!(body);
             let _ = writeln!(body, "### Example failed test from {}", lang.config.label);
@@ -434,6 +454,7 @@ fn render_improvement(
 
     for lang in languages
         .iter()
+        .filter(|lang| lang.decisive)
         .filter(|lang| !lang.improvements.is_empty())
     {
         let _ = writeln!(
@@ -655,6 +676,21 @@ mod tests {
     }
 
     #[test]
+    fn node_changes_do_not_decide_verdict_kind() {
+        let mut languages = regression_languages();
+        for lang in &mut languages {
+            if lang.config.name != "node" {
+                lang.regressions.clear();
+                lang.improvements.clear();
+                lang.crash_example = None;
+                lang.failure_example = None;
+            }
+        }
+
+        assert_eq!(verdict_kind(&languages), VerdictKind::NoChanges);
+    }
+
+    #[test]
     fn flaky_count_is_not_included_in_total_tests_or_pass_rate() {
         let mut metadata = RunMetadata::default();
         metadata.counts = [
@@ -682,6 +718,7 @@ mod tests {
         vec![
             LanguageVerdict {
                 config: LANGS[0],
+                decisive: true,
                 total_tests: 37_907,
                 pass_rate_now: 75.8,
                 delta_pass: 435,
@@ -721,6 +758,7 @@ mod tests {
             },
             LanguageVerdict {
                 config: LANGS[1],
+                decisive: false,
                 total_tests: 16_030,
                 pass_rate_now: 51.2,
                 delta_pass: 13,
@@ -756,6 +794,7 @@ mod tests {
             },
             LanguageVerdict {
                 config: LANGS[2],
+                decisive: true,
                 total_tests: 19_636,
                 pass_rate_now: 72.8,
                 delta_pass: 3,
@@ -795,6 +834,7 @@ mod tests {
             },
             LanguageVerdict {
                 config: LANGS[3],
+                decisive: true,
                 total_tests: 15_421,
                 pass_rate_now: 84.9,
                 delta_pass: 2,
@@ -835,6 +875,7 @@ mod tests {
         vec![
             LanguageVerdict {
                 config: LANGS[0],
+                decisive: true,
                 total_tests: 37_906,
                 pass_rate_now: 75.7,
                 delta_pass: -10,
@@ -867,6 +908,7 @@ mod tests {
             },
             LanguageVerdict {
                 config: LANGS[1],
+                decisive: false,
                 total_tests: 16_024,
                 pass_rate_now: 51.1,
                 delta_pass: -2,
@@ -899,6 +941,7 @@ mod tests {
             },
             LanguageVerdict {
                 config: LANGS[2],
+                decisive: true,
                 total_tests: 19_636,
                 pass_rate_now: 72.8,
                 delta_pass: -96,
@@ -929,6 +972,7 @@ mod tests {
             },
             LanguageVerdict {
                 config: LANGS[3],
+                decisive: true,
                 total_tests: 15_423,
                 pass_rate_now: 84.8,
                 delta_pass: 0,

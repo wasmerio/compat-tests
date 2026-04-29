@@ -10,6 +10,8 @@ use crate::commands::run::ItemError;
 use crate::git::file_json;
 use crate::langs::{Status, Workspace};
 
+const NON_DECISIVE_RUNNERS: &[&str] = &["node"];
+
 pub struct WasmerIdentity {
     pub repo: String,
     pub git_ref: String,
@@ -137,6 +139,10 @@ pub fn test_summary_filename(runner_name: &str) -> String {
 
 pub fn test_regressions_filename(runner_name: &str) -> String {
     format!("tests_{runner_name}_regressions.json")
+}
+
+pub fn is_decision_runner(runner_name: &str) -> bool {
+    !NON_DECISIVE_RUNNERS.contains(&runner_name)
 }
 
 pub fn load_baseline_status(

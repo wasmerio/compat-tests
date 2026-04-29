@@ -14,13 +14,6 @@
   - `test.test_docxmlrpc.DocXMLRPCHTTPGETServer.test_get_css` (`FAIL -> PASS`)
   - `test.test_docxmlrpc.DocXMLRPCHTTPGETServer.test_invalid_get_response` (`FAIL -> PASS`)
 
-- Examples from [tests_node_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_node_results.json):
-  - `parallel/test-fs-stat.js` (`FAIL -> PASS`)
-  - `parallel/test-fs-symlink-dir-junction-relative.js` (`FAIL -> PASS`)
-  - `parallel/test-stream2-httpclient-response-end.js` (`TIMEOUT -> PASS`)
-  - `parallel/test-http2-server-destroy-before-write.js` (`FAIL -> PASS`)
-  - `parallel/test-whatwg-url-custom-searchparams-stringifier.js` (`TIMEOUT -> PASS`)
-
 - Examples from [tests_php_results.json](https://github.com/wasmerio/compat-tests/blob/RESULTS_COMMIT_SHA/tests_php_results.json):
   - `ext/standard/tests/strings/trim_basic.phpt` (`FAIL -> PASS`)
   - `ext/standard/tests/strings/strval_basic.phpt` (`FAIL -> PASS`)

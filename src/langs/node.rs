@@ -542,10 +542,12 @@ mod tests {
     fn batches_node_tests() {
         let ids: Vec<String> = (0..121).map(|i| format!("parallel/test-{i}.js")).collect();
         let jobs = NodeRunner::batch_jobs(ids);
-        assert_eq!(jobs.len(), 3);
-        assert_eq!(jobs[0].tests.len(), 50);
-        assert_eq!(jobs[1].tests.len(), 50);
-        assert_eq!(jobs[2].tests.len(), 21);
+        assert_eq!(jobs.len(), 5);
+        assert_eq!(jobs[0].tests.len(), 25);
+        assert_eq!(jobs[1].tests.len(), 25);
+        assert_eq!(jobs[2].tests.len(), 25);
+        assert_eq!(jobs[3].tests.len(), 25);
+        assert_eq!(jobs[4].tests.len(), 21);
         assert_eq!(jobs[0].id, "node-batch-0000");
     }
 
@@ -559,8 +561,8 @@ mod tests {
             .collect();
         assert_eq!(NodeRunner::batch_filter("node-batch-0001"), Some(1));
         assert_eq!(selected.len(), 1);
-        assert_eq!(selected[0].tests.len(), 50);
-        assert_eq!(selected[0].tests[0], "parallel/test-50.js");
+        assert_eq!(selected[0].tests.len(), 25);
+        assert_eq!(selected[0].tests[0], "parallel/test-25.js");
     }
 
     #[test]
