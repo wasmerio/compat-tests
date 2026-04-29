@@ -557,6 +557,16 @@ fn patch_faulthandler_workarounds(testdir: &Path) -> Result<()> {
                     r#"args = [sys.executable, "-E", "-X", "faulthandler", "-u", script, "-v"]"#,
                     r#"args = [sys.executable, "-E", "-u", script, "-v"]"#,
                 ),
+                (
+                    r#"    if (res.rc and expected_success) or (not res.rc and not expected_success):
+        res.fail(cmd_line)
+"#,
+                    r#"    if expected_success and not res.rc and b"Traceback (most recent call last):" in res.err:
+        res.fail(cmd_line)
+    if (res.rc and expected_success) or (not res.rc and not expected_success):
+        res.fail(cmd_line)
+"#,
+                ),
             ],
         ),
         (
