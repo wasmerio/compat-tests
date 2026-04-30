@@ -13,6 +13,13 @@ use crate::runtime::{RunSpec, RunTarget, WasmerRuntime};
 
 const GUEST_PHP_BIN: &str = "/bin/php";
 
+const SKIPPED_TESTS: &[&str] = &[
+    // TODO(https://github.com/wasmerio/wasmer/issues/6522): getrusage() returns
+    // invalid ru_utime.tv_usec values under WASIX, so this test randomly passes
+    // or fails depending on whether the bogus value is positive or negative.
+    "ext/standard/tests/general_functions/getrusage_basic.phpt",
+];
+
 pub struct PhpRunner;
 
 impl PhpRunner {
@@ -185,6 +192,10 @@ impl PhpRunner {
             .strip_prefix("php-batch-")
             .and_then(|index| index.parse().ok())
     }
+
+    fn should_skip_test(id: &str) -> bool {
+        SKIPPED_TESTS.contains(&id)
+    }
 }
 
 impl LangRunner for PhpRunner {
@@ -212,6 +223,7 @@ impl LangRunner for PhpRunner {
         tracing::info!("discovering php tests");
         let mut tests = Vec::new();
         collect_phpt(&workspace.checkout, &workspace.checkout, &mut tests)?;
+        tests.retain(|id| !Self::should_skip_test(id));
         tests.sort();
         let jobs: Vec<TestJob> = match filter {
             None => Self::batch_jobs(tests),
@@ -671,6 +683,14 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].tests.len(), 50);
         assert_eq!(selected[0].tests[0], "test-050.phpt");
+    }
+
+    #[test]
+    fn php_skips_known_unstable_tests() {
+        assert!(PhpRunner::should_skip_test(
+            "ext/standard/tests/general_functions/getrusage_basic.phpt"
+        ));
+        assert!(!PhpRunner::should_skip_test("tests/basic/001.phpt"));
     }
 
     #[test]

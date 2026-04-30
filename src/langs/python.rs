@@ -561,7 +561,7 @@ fn patch_faulthandler_workarounds(testdir: &Path) -> Result<()> {
                     r#"    if (res.rc and expected_success) or (not res.rc and not expected_success):
         res.fail(cmd_line)
 "#,
-                    r#"    if expected_success and not res.rc and b"Traceback (most recent call last):" in res.err:
+                    r#"    if expected_success and not res.rc and b"AttributeError: module 'os' has no attribute 'fork'" in res.err:
         res.fail(cmd_line)
     if (res.rc and expected_success) or (not res.rc and not expected_success):
         res.fail(cmd_line)
