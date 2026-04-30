@@ -493,7 +493,7 @@ fn write_node_wrapper(
 ) -> Result<()> {
     let wasmer_bin = wasmer.binary_path();
     let mut script = String::from(
-        "#!/usr/bin/env bash\nset -euo pipefail\nchild=\"\"\ncleanup() {\n  if [[ -n \"$child\" ]]; then\n    kill -KILL \"$child\" 2>/dev/null || true\n  fi\n}\ntrap cleanup TERM INT ABRT\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\nulimit -c 0 2>/dev/null || true\nchild=\"\"\ncleanup() {\n  if [[ -n \"$child\" ]]; then\n    kill -KILL \"$child\" 2>/dev/null || true\n  fi\n}\ntrap cleanup TERM INT ABRT\n",
     );
     script.push_str("\ntest_serial_base=${TEST_SERIAL_ID:-");
     script.push_str(&shell_quote(test_serial_id));
@@ -923,5 +923,36 @@ not ok 1 parallel/test-assert.js
         assert_ne!(first, other_job);
         assert!(first.starts_with("compat-"));
         assert!(!first.contains('/'));
+    }
+
+    #[test]
+    fn node_wrapper_disables_core_dumps() {
+        let dir = tempdir::TempDir::new("node-wrapper").unwrap();
+        let wrapper = dir.path().join("wrapper.sh");
+        let workspace = Workspace {
+            output_dir: dir.path().join("out"),
+            checkout: dir.path().join("checkout"),
+            work_dir: dir.path().join("work"),
+        };
+        let wasmer = WasmerRuntime::resolve(
+            crate::runtime::RuntimeSource::LocalBinary("wasmer".into()),
+            dir.path(),
+            Duration::from_secs(1),
+            Arc::new(RunLog::new(dir.path().join("process.log"))),
+        )
+        .expect("resolve");
+
+        write_node_wrapper(
+            &wrapper,
+            &wasmer.runtime,
+            &workspace,
+            "wasmer/edgejs@test",
+            &[],
+            "serial",
+        )
+        .expect("write wrapper");
+
+        let script = fs::read_to_string(wrapper).expect("read wrapper");
+        assert!(script.contains("ulimit -c 0"));
     }
 }

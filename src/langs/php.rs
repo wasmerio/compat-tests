@@ -21,6 +21,9 @@ const SKIPPED_TESTS: &[&str] = &[
     // TODO(https://github.com/wasmerio/wasmer/issues/6530): ftruncate() on mounted
     // host volumes can report success while leaving stale file contents behind.
     "ext/spl/tests/SplFileObject/fileobject_005.phpt",
+    // TODO(https://github.com/wasmerio/wasmer/issues/6530): ftruncate() followed by
+    // vfprintf() on a mounted host volume can panic in virtual-fs mem_fs writes.
+    "ext/standard/tests/strings/vfprintf_variation1.phpt",
 ];
 
 pub struct PhpRunner;
@@ -695,6 +698,9 @@ mod tests {
         ));
         assert!(PhpRunner::should_skip_test(
             "ext/spl/tests/SplFileObject/fileobject_005.phpt"
+        ));
+        assert!(PhpRunner::should_skip_test(
+            "ext/standard/tests/strings/vfprintf_variation1.phpt"
         ));
         assert!(!PhpRunner::should_skip_test("tests/basic/001.phpt"));
     }
