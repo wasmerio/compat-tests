@@ -16039,7 +16039,7 @@
   "ext/standard/tests/file/readfile_variation7.phpt": "FAIL",
   "ext/standard/tests/file/readfile_variation8-win32-mb.phpt": "FAIL",
   "ext/standard/tests/file/readfile_variation8-win32.phpt": "FAIL",
-  "ext/standard/tests/file/readfile_variation9.phpt": "PASS",
+  "ext/standard/tests/file/readfile_variation9.phpt": "FAIL",
   "ext/standard/tests/file/readlink_realpath_basic1.phpt": "FAIL",
   "ext/standard/tests/file/readlink_realpath_basic2-win32.phpt": "FAIL",
   "ext/standard/tests/file/readlink_realpath_basic2.phpt": "PASS",
