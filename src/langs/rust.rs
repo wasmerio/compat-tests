@@ -2634,6 +2634,8 @@ fn case_matches_filter(case_id: &str, test_name: &str, filter: &str) -> bool {
 
 fn rust_run_flags(workspace: &Workspace) -> Vec<String> {
     vec![
+        "--env".into(),
+        "RUST_BACKTRACE=full".into(),
         "--volume".into(),
         format!(
             "{}:{}",
@@ -2661,6 +2663,14 @@ fn push_line(buffer: &mut String, line: &str) {
 fn cache_hash(wasmer: &Path, wasm: &Path) -> Result<u64> {
     let mut hasher = DefaultHasher::new();
     wasmer.hash(&mut hasher);
+    if let Ok(metadata) = fs::metadata(wasmer) {
+        metadata.len().hash(&mut hasher);
+        if let Ok(modified) = metadata.modified()
+            && let Ok(since_epoch) = modified.duration_since(std::time::UNIX_EPOCH)
+        {
+            since_epoch.as_nanos().hash(&mut hasher);
+        }
+    }
     fs::read(wasm)?.hash(&mut hasher);
     Ok(hasher.finish())
 }

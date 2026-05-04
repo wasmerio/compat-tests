@@ -62,6 +62,28 @@ impl PhpRunner {
         workspace.checkout.join(id)
     }
 
+    fn run_tests_args(
+        workspace: &Workspace,
+        result_file: &Path,
+        test_paths: &[PathBuf],
+    ) -> Vec<String> {
+        let mut args = vec![
+            "-d".into(),
+            "error_reporting=E_ALL & ~E_DEPRECATED".into(),
+            Self::run_tests_path(workspace).display().to_string(),
+            "-q".into(),
+            "-n".into(),
+            "-p".into(),
+            GUEST_PHP_BIN.into(),
+            "-W".into(),
+            result_file.display().to_string(),
+            "--show-diff".into(),
+            "--show-out".into(),
+        ];
+        args.extend(test_paths.iter().map(|path| path.display().to_string()));
+        args
+    }
+
     // TODO: That is common for all langs - move to higher levels
     fn volume_flags(workspace: &Workspace, job: &TestJob) -> Vec<String> {
         let job_run_dir = Self::job_run_dir(workspace, job);
@@ -123,18 +145,7 @@ impl PhpRunner {
         fs::create_dir_all(&job_run_dir)?;
         let result_file = Self::result_file(workspace, job);
         let _ = fs::remove_file(&result_file);
-        let mut args = vec![
-            "-d".into(),
-            "error_reporting=E_ALL & ~E_DEPRECATED".into(),
-            Self::run_tests_path(workspace).display().to_string(),
-            "-q".into(),
-            "-n".into(),
-            "-p".into(),
-            GUEST_PHP_BIN.into(),
-            "-W".into(),
-            result_file.display().to_string(),
-        ];
-        args.extend(test_paths.iter().map(|path| path.display().to_string()));
+        let args = Self::run_tests_args(workspace, &result_file, &test_paths);
 
         let result = wasmer.run(
             RunSpec {
@@ -733,5 +744,21 @@ mod tests {
             |flag| flag.starts_with("TEST_PHP_INFO_FILE=/tmp/work/php-job-")
                 && flag.ends_with("/run-test-info.php")
         ));
+    }
+
+    #[test]
+    fn php_args_show_failure_details() {
+        let workspace = super::Workspace {
+            output_dir: "/tmp/out".into(),
+            checkout: "/tmp/checkout".into(),
+            work_dir: "/tmp/work".into(),
+        };
+        let result_file = Path::new("/tmp/work/results.tsv");
+        let tests = vec!["/tmp/checkout/ext/standard/tests/file/readfile_variation9.phpt".into()];
+
+        let args = PhpRunner::run_tests_args(&workspace, result_file, &tests);
+        assert!(args.iter().any(|arg| arg == "--show-diff"));
+        assert!(args.iter().any(|arg| arg == "--show-out"));
+        assert!(!args.iter().any(|arg| arg == "--show-exp"));
     }
 }
