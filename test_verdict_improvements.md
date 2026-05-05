@@ -1,9 +1,9 @@
 # Shield - Improvement 🎉🎉🎉
 
-| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | CRASH |
-| -------- | ------ | ------------- | ---- | ---- | ------- | ----- |
-| Python | 37,907 | 75.8% | $${\color{green}+435}$$ | $${\color{green}-102}$$ | $${\color{green}-788}$$ | 0 |
-| Node.js | 16,030 | 51.2% | $${\color{green}+13}$$ | $${\color{green}-11}$$ | $${\color{green}-2}$$ | 0 |
+| Language | Tests  | Pass rate now | PASS | FAIL/TIMEOUT | SKIP | CRASH |
+| -------- | ------ | ------------- | ---- | ------------ | ---- | ----- |
+| Python | 37,907 | 75.8% | $${\color{green}+435}$$ | $${\color{green}-890}$$ | +455 | 0 |
+| Node.js | 16,030 | 51.2% | $${\color{green}+13}$$ | $${\color{green}-13}$$ | 0 | 0 |
 | PHP | 19,636 | 72.8% | $${\color{green}+3}$$ | $${\color{green}-3}$$ | 0 | 0 |
 | Rust | 15,421 | 84.9% | $${\color{green}+2}$$ | $${\color{green}-2}$$ | 0 | 0 |
 

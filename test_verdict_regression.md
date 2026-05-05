@@ -1,10 +1,10 @@
 # Shield - Regression 💩💩💩
 
-| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | CRASH |
-| -------- | ------ | ------------- | ---- | ---- | ------- | ----- |
-| Python | 37,906 | 75.7% | $${\color{red}-10}$$ | $${\color{red}+7}$$ | $${\color{red}+3}$$ | 0 |
-| Node.js | 16,024 | 51.1% | $${\color{red}-2}$$ | $${\color{red}+1}$$ | $${\color{red}+1}$$ | 0 |
-| PHP | 19,636 | 72.8% | $${\color{red}-96}$$ | $${\color{red}+106}$$ | $${\color{green}-10}$$ | $${\color{red}+3}$$ |
+| Language | Tests  | Pass rate now | PASS | FAIL/TIMEOUT | SKIP | CRASH |
+| -------- | ------ | ------------- | ---- | ------------ | ---- | ----- |
+| Python | 37,906 | 75.7% | $${\color{red}-10}$$ | $${\color{red}+10}$$ | 0 | 0 |
+| Node.js | 16,024 | 51.1% | $${\color{red}-2}$$ | $${\color{red}+2}$$ | 0 | 0 |
+| PHP | 19,636 | 72.8% | $${\color{red}-96}$$ | $${\color{red}+96}$$ | 0 | $${\color{red}+3}$$ |
 | Rust | 15,423 | 84.8% | 0 | 0 | 0 | 0 |
 
 ### Example crash from PHP

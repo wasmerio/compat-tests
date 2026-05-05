@@ -65,6 +65,7 @@ struct LanguageVerdict {
     delta_pass: isize,
     delta_fail: isize,
     delta_timeout: isize,
+    delta_skip: isize,
     delta_crash: isize,
     improvements: Vec<TestChange>,
     regressions: Vec<TestChange>,
@@ -155,6 +156,7 @@ fn collect_language_verdict(
         delta_pass: count_delta(&baseline_metadata, &metadata, "PASS"),
         delta_fail: count_delta(&baseline_metadata, &metadata, "FAIL"),
         delta_timeout: count_delta(&baseline_metadata, &metadata, "TIMEOUT"),
+        delta_skip: count_delta(&baseline_metadata, &metadata, "SKIP"),
         delta_crash: crash_count(&metadata) as isize - crash_count(&baseline_metadata) as isize,
         improvements,
         regressions,
@@ -495,11 +497,11 @@ fn render_no_changes(
 fn render_table(body: &mut String, languages: &[LanguageVerdict]) {
     let _ = writeln!(
         body,
-        "| Language | Tests  | Pass rate now | PASS | FAIL | TIMEOUT | CRASH |"
+        "| Language | Tests  | Pass rate now | PASS | FAIL/TIMEOUT | SKIP | CRASH |"
     );
     let _ = writeln!(
         body,
-        "| -------- | ------ | ------------- | ---- | ---- | ------- | ----- |"
+        "| -------- | ------ | ------------- | ---- | ------------ | ---- | ----- |"
     );
     for lang in languages {
         let _ = writeln!(
@@ -509,8 +511,8 @@ fn render_table(body: &mut String, languages: &[LanguageVerdict]) {
             format_usize(lang.total_tests),
             lang.pass_rate_now,
             color_delta(DeltaKind::Pass, lang.delta_pass),
-            color_delta(DeltaKind::Fail, lang.delta_fail),
-            color_delta(DeltaKind::Timeout, lang.delta_timeout),
+            color_delta(DeltaKind::FailTimeout, lang.delta_fail + lang.delta_timeout),
+            color_delta(DeltaKind::Skip, lang.delta_skip),
             color_delta(DeltaKind::Crash, lang.delta_crash),
         );
     }
@@ -600,8 +602,8 @@ fn format_usize(value: usize) -> String {
 
 enum DeltaKind {
     Pass,
-    Fail,
-    Timeout,
+    FailTimeout,
+    Skip,
     Crash,
 }
 
@@ -611,7 +613,8 @@ fn color_delta(kind: DeltaKind, delta: isize) -> String {
     }
     let good = match kind {
         DeltaKind::Pass => delta > 0,
-        DeltaKind::Fail | DeltaKind::Timeout | DeltaKind::Crash => delta < 0,
+        DeltaKind::FailTimeout | DeltaKind::Crash => delta < 0,
+        DeltaKind::Skip => return format!("{delta:+}"),
     };
     let color = if good { "green" } else { "red" };
     format!("$${{\\color{{{}}}{:+}}}$$", color, delta)
@@ -724,6 +727,7 @@ mod tests {
                 delta_pass: 435,
                 delta_fail: -102,
                 delta_timeout: -788,
+                delta_skip: 455,
                 delta_crash: 0,
                 improvements: vec![
                     change(
@@ -764,6 +768,7 @@ mod tests {
                 delta_pass: 13,
                 delta_fail: -11,
                 delta_timeout: -2,
+                delta_skip: 0,
                 delta_crash: 0,
                 improvements: vec![
                     change("parallel/test-fs-stat.js", Status::Fail, Status::Pass),
@@ -800,6 +805,7 @@ mod tests {
                 delta_pass: 3,
                 delta_fail: -3,
                 delta_timeout: 0,
+                delta_skip: 0,
                 delta_crash: 0,
                 improvements: vec![
                     change(
@@ -840,6 +846,7 @@ mod tests {
                 delta_pass: 2,
                 delta_fail: -2,
                 delta_timeout: 0,
+                delta_skip: 0,
                 delta_crash: 0,
                 improvements: vec![
                     change(
@@ -881,6 +888,7 @@ mod tests {
                 delta_pass: -10,
                 delta_fail: 7,
                 delta_timeout: 3,
+                delta_skip: 0,
                 delta_crash: 0,
                 improvements: vec![],
                 regressions: vec![change(
@@ -914,6 +922,7 @@ mod tests {
                 delta_pass: -2,
                 delta_fail: 1,
                 delta_timeout: 1,
+                delta_skip: 0,
                 delta_crash: 0,
                 improvements: vec![],
                 regressions: vec![change(
@@ -947,6 +956,7 @@ mod tests {
                 delta_pass: -96,
                 delta_fail: 106,
                 delta_timeout: -10,
+                delta_skip: 0,
                 delta_crash: 3,
                 improvements: vec![],
                 regressions: vec![change(
@@ -978,6 +988,7 @@ mod tests {
                 delta_pass: 0,
                 delta_fail: 0,
                 delta_timeout: 0,
+                delta_skip: 0,
                 delta_crash: 0,
                 improvements: vec![],
                 regressions: vec![],
