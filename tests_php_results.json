@@ -17967,7 +17967,7 @@
   "ext/standard/tests/strings/url_t.phpt": "PASS",
   "ext/standard/tests/strings/utf8.phpt": "PASS",
   "ext/standard/tests/strings/uuencode.phpt": "PASS",
-  "ext/standard/tests/strings/vfprintf_basic.phpt": "FAIL",
+  "ext/standard/tests/strings/vfprintf_basic.phpt": "PASS",
   "ext/standard/tests/strings/vfprintf_basic1.phpt": "PASS",
   "ext/standard/tests/strings/vfprintf_basic2.phpt": "PASS",
   "ext/standard/tests/strings/vfprintf_basic3.phpt": "PASS",

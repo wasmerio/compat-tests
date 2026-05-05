@@ -3,25 +3,25 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 4701,
-    "FLAKY": 2172,
-    "PASS": 26144,
+    "FAIL": 4737,
+    "FLAKY": 2168,
+    "PASS": 26157,
     "SKIP": 2115,
-    "TIMEOUT": 4960
+    "TIMEOUT": 4911
   },
   "crashes": {
-    "test.test_shutil": "crash: process: proc=000376 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --registry wasmer.io --net --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/python/checkout/Lib/test:/usr/local/lib/python3.13/test python/python -- -c <inline-code:1680 chars> test.test_shutil\nthread 'TokioTaskManager Thread Pool_thread_1' (29887) panicked at lib/wasix/src/syscalls/wasi/path_rename.rs:291:10:\nExpected target inode to exist, and it's too late to safely fail: Errno::noent\nstack backtrace:\n   0:     0x55d380c59ec2 - <std::sys::backtrace::BacktraceLock::print::DisplayBacktrace as core::fmt::Display>::fmt::hdadc7c28d26d7ce3\n   1:     0x55d380c6e81a - core::fmt::write::h469843d235cc4241\n   2:     0x55d380c1c286 - std::io::Write::write_fmt::h384251ddb7f1467c\n   3:     0x55d380c33809 - std::panicking::default_hook::{{closure}}::hd9d92b9a46805102\n   4:     0x55d380c33669 - std::panicking::default_hook::hedb2be0819bbe276\n   5:     0x55d380c33afb - std::panicking::panic_with_hook::h0fc23abecf35c6bd\n   6:     0x55d380c338c8 - std::panicking::panic_handler::{{closure}}::ha111c1a3ccf85d19\n   7:     0x55d380c2cb09 - std::sys::backtrace::__rust_end_short_backtrace::h41d63216e1ba5fa4\n   8:     0x55d380c0f07d - __rustc[16f1505adc47261a]::rust_begin_unwind\n   9:     0x55d380c79f2c - core::panicking::panic_fmt::hc13412975f563dde\n  10:     0x55d380c790e2 - core::result::unwrap_failed::hd8abf8e6faab58b4\n  11:     0x55d37c4bff7b - wasmer_wasix::syscalls::wasi::path_rename::path_rename_internal::hc074d6c6a1bb2005\n  12:     0x55d37c4bd973 - wasmer_wasix::syscalls::wasi::path_rename::path_rename::h929f4b8a4e164dff\n  13:     0x55d37c627d92 - corosensei::coroutine::on_stack::wrapper::hd49de17acd5a5033\n  14:     0x55d380204df9 - stack_call_trampoline\n  15:     0x55d37c8772e8 - wasmer_vm::trap::traphandlers::on_host_stack::hee6c471c00dab0a7\n  16:     0x55d37c907b04 - wasmer::backend::sys::entities::function::gen_fn_callback_s6::func_wrapper::h4666115b1a3d544d\n  17:     0x7f7ffb3ad191 - <unknown>\n  18:     0x7f7ffb3a6e89 - <unknown>\n  19:     0x7f7ffb3b12f6 - <unknown>\n  20:     0x7f7ffbc23d9d - <unknown>\n  21:     0x7f7ffbc23b9f - <unknown>\n  22:     0x7f7ffb783129 - <unknown>\n  23:     0x7f7ffb61b4d2 - <unknown>\n  24:     0x7f7ffb71194b - <unknown>\n  25:     0x7f7ffb6c5b20 - <unknown>\n  26:     0x7f7ffb6c59c4 - <unknown>\n  27:     0x7f7ffb6cc75e - <unknown>\n  28:     0x7f7ffb6c5728 - <unknown>\n  29:     0x7f7ffb6c5891 - <unknown>\n  30:     0x7f7ffb70cd91 - <unknown>\n  31:     0x7f7ffb6c5b20 - <unknown>\n  32:     0x7f7ffb6c59c4 - <unknown>\n  33:     0x7f7ffb6c4b17 - <unknown>\n  34:     0x7f7ffb6c5f16 - <unknown>\n  35:     0x7f7ffb7d8b92 - <unknown>\n  36:     0x7f7ffb6c4537 - <unknown>\n"
+    "test.test_shutil": "crash: process: proc=000403 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --registry wasmer.io --net --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/python/checkout/Lib/test:/usr/local/lib/python3.13/test python/python -- -c <inline-code:1680 chars> test.test_shutil\nthread 'TokioTaskManager Thread Pool_thread_1' (30770) panicked at lib/wasix/src/syscalls/wasi/path_rename.rs:291:10:\nExpected target inode to exist, and it's too late to safely fail: Errno::noent\nstack backtrace:\n   0:     0x564aac1770c2 - <std::sys::backtrace::BacktraceLock::print::DisplayBacktrace as core::fmt::Display>::fmt::hdadc7c28d26d7ce3\n   1:     0x564aac18ba1a - core::fmt::write::h469843d235cc4241\n   2:     0x564aac139486 - std::io::Write::write_fmt::h384251ddb7f1467c\n   3:     0x564aac150a09 - std::panicking::default_hook::{{closure}}::hd9d92b9a46805102\n   4:     0x564aac150869 - std::panicking::default_hook::hedb2be0819bbe276\n   5:     0x564aac150cfb - std::panicking::panic_with_hook::h0fc23abecf35c6bd\n   6:     0x564aac150ac8 - std::panicking::panic_handler::{{closure}}::ha111c1a3ccf85d19\n   7:     0x564aac149d09 - std::sys::backtrace::__rust_end_short_backtrace::h41d63216e1ba5fa4\n   8:     0x564aac12c27d - __rustc[16f1505adc47261a]::rust_begin_unwind\n   9:     0x564aac19712c - core::panicking::panic_fmt::hc13412975f563dde\n  10:     0x564aac1962e2 - core::result::unwrap_failed::hd8abf8e6faab58b4\n  11:     0x564aa79dcf7b - wasmer_wasix::syscalls::wasi::path_rename::path_rename_internal::hc074d6c6a1bb2005\n  12:     0x564aa79da973 - wasmer_wasix::syscalls::wasi::path_rename::path_rename::h929f4b8a4e164dff\n  13:     0x564aa7b44d92 - corosensei::coroutine::on_stack::wrapper::hd49de17acd5a5033\n  14:     0x564aab721ff9 - stack_call_trampoline\n  15:     0x564aa7d942e8 - wasmer_vm::trap::traphandlers::on_host_stack::hee6c471c00dab0a7\n  16:     0x564aa7e24b04 - wasmer::backend::sys::entities::function::gen_fn_callback_s6::func_wrapper::h4666115b1a3d544d\n  17:     0x7f42d47ad191 - <unknown>\n  18:     0x7f42d47a6e89 - <unknown>\n  19:     0x7f42d47b12f6 - <unknown>\n  20:     0x7f42d5023d9d - <unknown>\n  21:     0x7f42d5023b9f - <unknown>\n  22:     0x7f42d4b83129 - <unknown>\n  23:     0x7f42d4a1b4d2 - <unknown>\n  24:     0x7f42d4b1194b - <unknown>\n  25:     0x7f42d4ac5b20 - <unknown>\n  26:     0x7f42d4ac59c4 - <unknown>\n  27:     0x7f42d4acc75e - <unknown>\n  28:     0x7f42d4ac5728 - <unknown>\n  29:     0x7f42d4ac5891 - <unknown>\n  30:     0x7f42d4b0cd91 - <unknown>\n  31:     0x7f42d4ac5b20 - <unknown>\n  32:     0x7f42d4ac59c4 - <unknown>\n  33:     0x7f42d4ac4b17 - <unknown>\n  34:     0x7f42d4ac5f16 - <unknown>\n  35:     0x7f42d4bd8b92 - <unknown>\n  36:     0x7f42d4ac4537 - <unknown>\n"
   },
   "python": {
     "commit": "e3245fc95e570ac823deb50689041bc1f81d6b27"
   },
   "run": {
-    "finished_at": "2026-05-05T04:08:10Z",
-    "started_at": "2026-05-05T03:18:15Z"
+    "finished_at": "2026-05-05T07:48:54Z",
+    "started_at": "2026-05-05T06:58:45Z"
   },
   "wasmer": {
-    "commit": "c84ce4563e1723fc8043871876f696713d7c0440",
-    "ref": "main",
+    "commit": "bf1e6d4801ec4663e5a8fa91992413f16a639ed4",
+    "ref": "bf1e6d4801ec4663e5a8fa91992413f16a639ed4",
     "repo": "https://github.com/wasmerio/wasmer.git"
   }
 }
