@@ -4231,7 +4231,7 @@
   "test.test_asyncio.test_base_events.BaseEventLoopTests.test__run_once_cancelled_event_cleanup": "PASS",
   "test.test_asyncio.test_base_events.BaseEventLoopTests.test__run_once_schedule_handle": "PASS",
   "test.test_asyncio.test_base_events.BaseEventLoopTests.test_asyncgen_finalization_by_gc": "PASS",
-  "test.test_asyncio.test_base_events.BaseEventLoopTests.test_asyncgen_finalization_by_gc_in_other_thread": "TIMEOUT",
+  "test.test_asyncio.test_base_events.BaseEventLoopTests.test_asyncgen_finalization_by_gc_in_other_thread": "FAIL",
   "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later": "PASS",
   "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_later_negative_delays": "PASS",
   "test.test_asyncio.test_base_events.BaseEventLoopTests.test_call_soon": "PASS",
