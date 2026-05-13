@@ -3,24 +3,22 @@
     "timeout_seconds": 600
   },
   "counts": {
-    "FAIL": 4625,
-    "FLAKY": 2164,
+    "FAIL": 4575,
+    "FLAKY": 2170,
     "PASS": 26213,
     "SKIP": 2172,
-    "TIMEOUT": 4910
+    "TIMEOUT": 4960
   },
-  "crashes": {
-    "test.test_posix": "crash: process: proc=000346 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --registry wasmer.io --net --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/python/checkout/Lib/test:/usr/local/lib/python3.13/test python/python -- -c <inline-code:1680 chars> test.test_posix\nthread 'TokioTaskManager Thread Pool_thread_27' (28901) panicked at /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.1/src/runtime/task/core.rs:422:22:\nJoinHandle polled after completion\nstack backtrace:\n"
-  },
+  "crashes": {},
   "python": {
     "commit": "e3245fc95e570ac823deb50689041bc1f81d6b27"
   },
   "run": {
-    "finished_at": "2026-05-12T04:09:57Z",
-    "started_at": "2026-05-12T03:19:59Z"
+    "finished_at": "2026-05-13T04:10:26Z",
+    "started_at": "2026-05-13T03:20:48Z"
   },
   "wasmer": {
-    "commit": "db51d231aca29ec2b9e4bb504e4c256aa668f098",
+    "commit": "4ff19ed573db52286e213a50b0cb6e2ea0eaf8b5",
     "ref": "main",
     "repo": "https://github.com/wasmerio/wasmer.git"
   }
