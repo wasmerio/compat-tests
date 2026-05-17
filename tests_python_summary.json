@@ -9,15 +9,13 @@
     "SKIP": 2172,
     "TIMEOUT": 4911
   },
-  "crashes": {
-    "test.test_posix": "crash: process: proc=000336 cwd=/home/runner/work/anti-regression-shield/anti-regression-shield env=RUST_BACKTRACE=full command=/home/runner/work/anti-regression-shield/anti-regression-shield/.work/wasmer/checkout/target/release/wasmer run --registry wasmer.io --net --volume /home/runner/work/anti-regression-shield/anti-regression-shield/.work/python/checkout/Lib/test:/usr/local/lib/python3.13/test python/python -- -c <inline-code:1680 chars> test.test_posix\nthread 'TokioTaskManager Thread Pool_thread_27' (28688) panicked at /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.52.1/src/runtime/task/core.rs:422:22:\nJoinHandle polled after completion\nstack backtrace:\n"
-  },
+  "crashes": {},
   "python": {
     "commit": "e3245fc95e570ac823deb50689041bc1f81d6b27"
   },
   "run": {
-    "finished_at": "2026-05-16T04:10:01Z",
-    "started_at": "2026-05-16T03:18:17Z"
+    "finished_at": "2026-05-17T04:16:45Z",
+    "started_at": "2026-05-17T03:19:56Z"
   },
   "wasmer": {
     "commit": "9efb5d1320d456976d9344308a9fa109df483b5d",
